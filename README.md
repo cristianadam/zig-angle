@@ -279,7 +279,25 @@ so this is not merely an Objective-C problem), `system_utils_apple.cpp` includes
 `<CoreServices/…>`, and the Metal backend is Objective-C++ against `Foundation`
 and `Metal`. The first two are in `libangle_common_sources`, which even a
 translator-only build would need, so there is no useful reduced configuration
-that stays on the libc side. Point `ANGLE_MACOS_SDK` at a real `MacOSX.sdk`:
+that stays on the libc side.
+
+Picking a different renderer does not get you out of it either, because the
+requirement sits *below* the backend layer — compiling `debug.cpp` for macOS
+with no backend defines at all still fails on `<os/log.h>`. For the record:
+
+* **CGL** (`-DANGLE_ENABLE_CGL=ON`) is Objective-C++ against `Cocoa`,
+  `OpenGL` and `QuartzCore`, so it needs the SDK exactly as much as Metal
+  does — and OpenGL has been deprecated on macOS since 10.14.
+* **Vulkan** is not buildable from this tree on *any* platform, never mind
+  macOS. There is no `Vulkan.cmake` source list, and WebKit strips
+  `vulkan-headers`, `glslang` and `spirv-tools` to their licence files, with
+  `vulkan-loader` and `vulkan-utility-libraries` down to a single
+  `README.chromium`. On macOS it would also mean MoltenVK, which is itself a
+  Metal translation layer — an extra dependency to avoid a dependency you
+  would still need. If you want the Vulkan backend, start from upstream ANGLE,
+  whose `DEPS` fetches all of that.
+
+Point `ANGLE_MACOS_SDK` at a real `MacOSX.sdk`:
 
 ```powershell
 $env:ANGLE_MACOS_SDK = "D:\sdks\MacOSX15.5.sdk"
