@@ -38,12 +38,30 @@ set(angle_enable_explicit_context FALSE)
 set(angle_has_astc_encoder FALSE)
 set(angle_enable_unwind_backtrace_support FALSE)
 
+# Vulkan.cmake branches on these. Everything that would need a windowing system
+# header is off; the backend reaches the GPU through the loader it dlopens.
+set(angle_has_build FALSE)
+set(angle_use_gbm FALSE)
+set(angle_use_wayland FALSE)
+set(angle_use_vulkan_null_display FALSE)
+set(angle_enable_swiftshader FALSE)
+set(angle_enable_vulkan_validation_layers FALSE)
+
 include(${ANGLE_SOURCE_DIR}/Compiler.cmake)
 include(${ANGLE_SOURCE_DIR}/GLESv2.cmake)
 include(${ANGLE_SOURCE_DIR}/GL.cmake)
-include(${ANGLE_SOURCE_DIR}/linux.cmake)
+if (EXISTS ${ANGLE_SOURCE_DIR}/linux.cmake)
+    include(${ANGLE_SOURCE_DIR}/linux.cmake)   # WebKit-only; upstream has no such file
+elseif (is_linux)
+    set(angle_dma_buf_sources
+        "src/common/linux/dma_buf_utils.cpp"
+        "src/common/linux/dma_buf_utils.h")
+endif ()
 if (is_win)
     include(${ANGLE_SOURCE_DIR}/D3D.cmake)
+endif ()
+if (ANGLE_ENABLE_VULKAN)
+    include(${ANGLE_SOURCE_DIR}/Vulkan.cmake)
 endif ()
 if (is_apple)
     # Metal.cmake leaves metal_internal_shader_compilation_supported empty, so

@@ -124,13 +124,30 @@ elseif (is_linux AND CMAKE_HOST_WIN32 AND ZIG_ABI MATCHES "^gnu")
 endif ()
 
 if (_angle_runner)
-    add_test(NAME angle.smoke COMMAND ${_angle_runner})
-    set_tests_properties(angle.smoke PROPERTIES
-        LABELS runtime
-        # angle_smoke returns this when EGL will not come up at all, which says
-        # something about the machine rather than about the build.
-        SKIP_RETURN_CODE 77
-        PASS_REGULAR_EXPRESSION "angle_smoke: PASS")
+    # The default backend, plus each optional one that was actually built, so a
+    # backend that compiles but cannot bring up a display is not mistaken for a
+    # working one.
+    set(_angle_smoke_cases "")
+    if (ANGLE_ENABLE_VULKAN)
+        list(APPEND _angle_smoke_cases vulkan)
+    endif ()
+
+    foreach (_case IN ITEMS "" ${_angle_smoke_cases})
+        if (_case STREQUAL "")
+            set(_name angle.smoke)
+            set(_args "")
+        else ()
+            set(_name angle.smoke.${_case})
+            set(_args ${_case})
+        endif ()
+        add_test(NAME ${_name} COMMAND ${_angle_runner} ${_args})
+        set_tests_properties(${_name} PROPERTIES
+            LABELS runtime
+            # angle_smoke returns this when EGL will not come up at all, which
+            # says something about the machine rather than about the build.
+            SKIP_RETURN_CODE 77
+            PASS_REGULAR_EXPRESSION "angle_smoke: PASS")
+    endforeach ()
     message(STATUS "zig-angle: angle.smoke will run ${_angle_runner_note}")
 else ()
     message(STATUS

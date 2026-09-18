@@ -166,10 +166,8 @@ existing ones.
 
 * **Linux** uses ANGLE's `gl/egl` backend, which `dlopen`s the system
   `libEGL.so.1` at runtime. That is the configuration WebKit's GTK/WPE ports
-  use, and it is the only one that cross-compiles cleanly: the GLX backend would
-  need X11 development headers, which zig does not bundle. The Vulkan backend is
-  not an option here at all — WebKit strips `third_party/vulkan-headers`,
-  `glslang` and `spirv-tools` down to their licence files.
+  use, and the GLX alternative would need X11 development headers that zig does
+  not bundle. Vulkan is available too, from an upstream checkout — see below.
 
   The libraries deliberately carry no `SOVERSION`, matching what upstream ANGLE
   ships. `DisplayEGL` looks the vendor driver up as exactly `libEGL.so.1`, so
@@ -264,6 +262,101 @@ beautifully for Zig code calling imported functions, and is strictly further
 from what a large C++ codebase like ANGLE needs than the wasi target that
 already fails above.
 
+### Vulkan, from an upstream ANGLE checkout
+
+WebKit's copy cannot build the Vulkan backend: there is no `Vulkan.cmake` source
+list, and `vulkan-headers`, `spirv-tools` and `glslang` are stripped to their
+licence files. Point `ANGLE_SOURCE_DIR` at an upstream checkout instead and use
+the `-vulkan` presets:
+
+```powershell
+$env:ANGLE_SOURCE_DIR = "C:\Projects\github\angle-upstream"
+cmake --workflow --preset aarch64-linux-gnu-vulkan
+```
+
+There is a `<triple>-vulkan` preset for every non-macOS triple, and
+`-DANGLE_ENABLE_VULKAN=ON` works on any triple including macOS — there is just
+no preset for it, because on macOS it is a strictly longer path to the same
+place (see the SDK section below). Configuring it against a tree
+with no `Vulkan.cmake` fails with instructions rather than a wall of errors.
+
+**Preparing the upstream checkout.** `gclient sync` pulls gigabytes of Chromium
+build infrastructure; almost none of it is needed here. ANGLE carries its own
+SPIR-V builder and parser in `src/common/spirv`, vendors volk in
+`src/third_party/volk`, and checks the Vulkan internal shaders in pre-compiled
+as `vk_internal_shaders_autogen.cpp` — so glslang is a generation-time tool,
+not a build dependency. What is actually required is four dependencies at the
+revisions pinned in `DEPS`, three of them header-only:
+
+| Path under the checkout                | What for            |
+| -------------------------------------- | ------------------- |
+| `third_party/vulkan-headers/src`        | `vulkan/vulkan.h`   |
+| `third_party/spirv-headers/src`         | SPIR-V grammar      |
+| `third_party/vulkan_memory_allocator`   | VMA, header-only    |
+| `third_party/spirv-tools/src`           | the one real build  |
+| `third_party/zlib`                      | `compression_utils_portable.cc` |
+
+Each is a `git init` + `git fetch --depth 1 <url> <rev>` + `git checkout
+FETCH_HEAD` away. Two of them are only reachable from the Chromium mirrors
+rather than GitHub, VMA included — its pinned SHA does not exist upstream.
+SPIRV-Tools is added with `add_subdirectory`; it generates its grammar tables
+with Python, so nothing has to be compiled for the host and it cross-compiles
+like any other library.
+
+Then generate the CMake source lists with the converter WebKit ships:
+
+```sh
+cp <webkit>/Source/ThirdParty/ANGLE/gni-to-cmake.py .
+pip install ply
+export PYTHONUTF8=1
+python gni-to-cmake.py src/compiler.gni Compiler.cmake
+python gni-to-cmake.py src/libGLESv2.gni GLESv2.cmake
+python gni-to-cmake.py src/libANGLE/renderer/gl/BUILD.gn GL.cmake --prepend src/libANGLE/renderer/gl/
+python gni-to-cmake.py src/libANGLE/renderer/d3d/BUILD.gn D3D.cmake --prepend src/libANGLE/renderer/d3d/
+python gni-to-cmake.py src/libANGLE/renderer/metal/BUILD.gn Metal.cmake --prepend src/libANGLE/renderer/metal/
+python gni-to-cmake.py src/libANGLE/renderer/vulkan/BUILD.gn Vulkan.cmake --prepend src/libANGLE/renderer/vulkan/
+```
+
+That script needs two fixes first, neither of which WebKit hit because it never
+generated a Vulkan list. They are in `tools/gni-to-cmake.patch`:
+
+```sh
+patch -p1 < <zig-angle>/tools/gni-to-cmake.patch
+```
+
+
+(`PYTHONUTF8=1` is the third thing you need, and is not a patch: without it the
+script reads `.gni` files as cp1252 and dies on the first non-ASCII byte.)
+
+* Root-relative GN imports, spelled `//build_overrides/swiftshader.gni`, are
+  joined onto the current directory and become UNC paths on Windows. They have
+  to resolve against the ANGLE root.
+* `foo_sources += bar_sources`, where the right hand side is another list
+  variable rather than a literal, emits `list(APPEND foo_sources` and then
+  nothing — no items, no closing paren — which swallows the next statement.
+  It needs to emit `${bar_sources})`. Exactly one line in the Vulkan GN hits
+  this, and it corrupts the whole file.
+
+The patch is against WebKit's copy of the script, which is the one to start
+from; the converter itself is Apple's, under the BSD licence in its header.
+
+Unlike WebKit's copy, an upstream checkout has no checked-in `angle_commit.h` or
+`ANGLEShaderProgramVersion.h`; `cmake/AngleGeneratedHeaders.cmake` runs ANGLE's
+own scripts to produce them into the build tree.
+
+**How Vulkan is loaded.** The build defines `ANGLE_SHARED_LIBVULKAN=1`, which
+despite the name selects the volk path: every entry point is a function pointer
+resolved at runtime after `vk_renderer.cpp` dlopens the system loader
+(`libvulkan.so.1`, `vulkan-1.dll`, `libMoltenVK.dylib`). Without it ANGLE
+expects the `vk*` symbols from libvulkan at link time, which a cross build has
+no import library for.
+
+**Asking for a Vulkan display on Linux** takes a different attribute from the GL
+backend. With no X11, Wayland or GBM compiled in, `CreateVulkanOffscreenDisplay`
+is reachable only through `EGL_PLATFORM_ANGLE_NATIVE_PLATFORM_TYPE_ANGLE` set to
+`EGL_PLATFORM_SURFACELESS_MESA` — not the `EGL_PLATFORM_ANGLE_DEVICE_TYPE_ANGLE`
+the GL backend wants. `tests/angle_smoke.cpp` picks the right one per backend.
+
 ### macOS needs an Apple SDK
 
 This is ANGLE's requirement, not a zig limitation, and the distinction is worth
@@ -288,14 +381,16 @@ with no backend defines at all still fails on `<os/log.h>`. For the record:
 * **CGL** (`-DANGLE_ENABLE_CGL=ON`) is Objective-C++ against `Cocoa`,
   `OpenGL` and `QuartzCore`, so it needs the SDK exactly as much as Metal
   does — and OpenGL has been deprecated on macOS since 10.14.
-* **Vulkan** is not buildable from this tree on *any* platform, never mind
-  macOS. There is no `Vulkan.cmake` source list, and WebKit strips
-  `vulkan-headers`, `glslang` and `spirv-tools` to their licence files, with
-  `vulkan-loader` and `vulkan-utility-libraries` down to a single
-  `README.chromium`. On macOS it would also mean MoltenVK, which is itself a
-  Metal translation layer — an extra dependency to avoid a dependency you
-  would still need. If you want the Vulkan backend, start from upstream ANGLE,
-  whose `DEPS` fetches all of that.
+* **Vulkan** builds on macOS from an upstream checkout (`-DANGLE_ENABLE_VULKAN=ON`
+  alongside or instead of Metal) but does not avoid the SDK, for two reasons
+  stacked on top of each other. ANGLE's macOS Vulkan *display* code is
+  Objective-C++ against Cocoa, IOSurface and QuartzCore — `DisplayVkMac.mm`
+  will not get past `<Cocoa/Cocoa.h>` — and underneath that the common code
+  still wants `<os/log.h>`. Only the portable core, `vk_renderer.cpp`, compiles
+  without an SDK. At runtime it would also want MoltenVK, which is itself a
+  Metal translation layer, so you end up at GLES → ANGLE → Vulkan → MoltenVK →
+  Metal where Metal alone would do. It works; it is just strictly more layers
+  and no fewer dependencies.
 
 Point `ANGLE_MACOS_SDK` at a real `MacOSX.sdk`:
 
@@ -345,6 +440,7 @@ toolchains/<triple>.cmake    two lines each: set(ZIG_TARGET …) + include
 tests/angle_smoke.cpp        consumer test: WebGL-style context, draw, readback
 tests/CMakeLists.txt         registers the CTest tests, picks a runner
 CMakePresets.json            one configure/build/test/workflow preset per triple
+tools/gni-to-cmake.patch     three fixes to WebKit's GN-to-CMake converter
 ```
 
 `cmake/AngleSources.cmake` includes `Compiler.cmake`, `GLESv2.cmake`,

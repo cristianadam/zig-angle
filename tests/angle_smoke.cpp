@@ -260,15 +260,27 @@ int main(int argc, char **argv)
             std::vector<EGLint> displayAttribs = {EGL_PLATFORM_ANGLE_TYPE_ANGLE, backend};
 #if defined(__linux__)
             // On Linux this build has neither X11, Wayland nor GBM compiled in
-            // (they would all need headers zig does not ship), so ANGLE's
-            // CreateDisplayFromAttribs has exactly two ways to hand back a
-            // DisplayEGL: an explicit EGL device type, or the surfaceless Mesa
-            // platform. Ask for the first - it is the same thing WebKit's
-            // GTK/WPE ports request, and without it eglGetDisplay just returns
-            // EGL_NO_DISPLAY with EGL_SUCCESS.
-            displayAttribs.insert(displayAttribs.end(),
-                                  {EGL_PLATFORM_ANGLE_DEVICE_TYPE_ANGLE,
-                                   EGL_PLATFORM_ANGLE_DEVICE_TYPE_EGL_ANGLE});
+            // (they would all need headers zig does not ship), so ANGLE will
+            // only hand back a display for a request that names something not
+            // tied to a window system. Which attribute does that differs by
+            // backend, and getting it wrong returns EGL_NO_DISPLAY while
+            // leaving eglGetError() at EGL_SUCCESS.
+            if (backend == EGL_PLATFORM_ANGLE_TYPE_VULKAN_ANGLE)
+            {
+                // CreateVulkanOffscreenDisplay is reached only through the
+                // surfaceless Mesa platform.
+                displayAttribs.insert(displayAttribs.end(),
+                                      {EGL_PLATFORM_ANGLE_NATIVE_PLATFORM_TYPE_ANGLE,
+                                       EGL_PLATFORM_SURFACELESS_MESA});
+            }
+            else
+            {
+                // DisplayEGL wants an explicit EGL device type - the same thing
+                // WebKit's GTK and WPE ports ask for.
+                displayAttribs.insert(displayAttribs.end(),
+                                      {EGL_PLATFORM_ANGLE_DEVICE_TYPE_ANGLE,
+                                       EGL_PLATFORM_ANGLE_DEVICE_TYPE_EGL_ANGLE});
+            }
 #endif
             displayAttribs.push_back(EGL_NONE);
 

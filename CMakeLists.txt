@@ -11,12 +11,32 @@ cmake_minimum_required(VERSION 3.25)
 
 project(zig-angle LANGUAGES C CXX)
 
-set(ANGLE_SOURCE_DIR "C:/Projects/github/WebKit/Source/ThirdParty/ANGLE"
-    CACHE PATH "Path to the ANGLE checkout (WebKit Source/ThirdParty/ANGLE)")
+# -D wins, then the environment, then WebKit's in-tree copy. The Vulkan
+# backend needs this pointed at an upstream checkout instead.
+if (DEFINED ENV{ANGLE_SOURCE_DIR})
+    set(_angle_source_dir_default "$ENV{ANGLE_SOURCE_DIR}")
+else ()
+    set(_angle_source_dir_default "C:/Projects/github/WebKit/Source/ThirdParty/ANGLE")
+endif ()
+set(ANGLE_SOURCE_DIR "${_angle_source_dir_default}"
+    CACHE PATH "Path to the ANGLE checkout (WebKit's copy, or upstream for Vulkan)")
 set(ZLIB_SOURCE_DIR "" CACHE PATH "Existing zlib source tree; empty means download")
 
 if (NOT EXISTS "${ANGLE_SOURCE_DIR}/GLESv2.cmake")
     message(FATAL_ERROR "zig-angle: ANGLE_SOURCE_DIR='${ANGLE_SOURCE_DIR}' is not an ANGLE checkout")
+endif ()
+
+# The Vulkan backend is only reachable from an upstream ANGLE checkout, so it is
+# opt-in and orthogonal to the per-platform backend defaults below.
+option(ANGLE_ENABLE_VULKAN "Build the Vulkan backend (needs upstream ANGLE)" OFF)
+if (ANGLE_ENABLE_VULKAN AND NOT EXISTS "${ANGLE_SOURCE_DIR}/Vulkan.cmake")
+    message(FATAL_ERROR
+        "zig-angle: ANGLE_ENABLE_VULKAN needs a Vulkan.cmake source list next to "
+        "GLESv2.cmake. WebKit's ANGLE copy has none; generate one in an upstream "
+        "checkout with:
+"
+        "  python gni-to-cmake.py src/libANGLE/renderer/vulkan/BUILD.gn Vulkan.cmake "
+        "--prepend src/libANGLE/renderer/vulkan/")
 endif ()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -83,12 +103,16 @@ else ()
     set(ANGLE_ENABLE_CGL OFF)
 endif ()
 
+include(AngleGeneratedHeaders)
 include(AngleSources)
 include(AngleZlib)
+if (ANGLE_ENABLE_VULKAN)
+    include(AngleVulkan)
+endif ()
 
 # --- Include paths and preprocessor state ----------------------------------
 set(ANGLE_PRIVATE_INCLUDE_DIRECTORIES
-    "${ANGLE_SOURCE_DIR}/WebKit"          # checked-in angle_commit.h
+    "${ANGLE_GENERATED_INCLUDE_DIR}"      # angle_commit.h, ANGLEShaderProgramVersion.h
     "${ANGLE_SOURCE_DIR}/include"
     "${ANGLE_SOURCE_DIR}/include/KHR"
     "${ANGLE_SOURCE_DIR}/src"
@@ -214,6 +238,58 @@ elseif (is_apple)
     endif ()
 endif ()
 
+if (ANGLE_ENABLE_VULKAN)
+    list(APPEND ANGLE_EXTRA_SOURCE_LISTS
+        vulkan_backend_sources
+        angle_translator_lib_spirv_sources
+        libangle_gpu_info_util_vulkan_sources
+    )
+    # ANGLE_SHARED_LIBVULKAN is badly named: it selects the volk path, where
+    # every Vulkan entry point is a function pointer resolved at runtime after
+    # vk_renderer.cpp dlopens the system loader. Without it ANGLE expects the
+    # vk* symbols to come from libvulkan at link time, which a cross build has
+    # no import library for. volk is vendored in ANGLE itself.
+    list(APPEND ANGLE_DEFINITIONS ANGLE_ENABLE_VULKAN ANGLE_SHARED_LIBVULKAN=1)
+    # vulkan.h only declares a platform's surface extensions when asked. Linux
+    # needs none of them: with no X11, Wayland or GBM compiled in, the only
+    # display ANGLE can create there is the surfaceless offscreen one.
+    if (is_win)
+        list(APPEND ANGLE_DEFINITIONS VK_USE_PLATFORM_WIN32_KHR)
+    elseif (is_apple)
+        list(APPEND ANGLE_DEFINITIONS VK_USE_PLATFORM_METAL_EXT)
+    endif ()
+    # vulkan_icd.cpp wants a path for the mock ICD manifest even though nothing
+    # here ships one; it is only consulted when a test explicitly asks for the
+    # mock driver.
+    list(APPEND ANGLE_DEFINITIONS "ANGLE_VK_MOCK_ICD_JSON=\"VkICD_mock_icd.json\"")
+    list(APPEND ANGLE_VULKAN_EXTRA_SOURCES "${ANGLE_SOURCE_DIR}/src/third_party/volk/volk.c")
+    list(APPEND ANGLE_PRIVATE_INCLUDE_DIRECTORIES ${ANGLE_VULKAN_INCLUDE_DIRECTORIES})
+    list(APPEND ANGLE_PLATFORM_LIBRARIES ${ANGLE_VULKAN_LIBRARIES})
+
+    # ANGLE's own SPIR-V builder/parser and the loader shim are plain source
+    # files rather than entries in any generated list.
+    list(APPEND ANGLE_VULKAN_EXTRA_SOURCES
+        "${ANGLE_SOURCE_DIR}/src/common/spirv/angle_spirv_utils.cpp"
+        "${ANGLE_SOURCE_DIR}/src/common/spirv/spirv_instruction_builder_autogen.cpp"
+        "${ANGLE_SOURCE_DIR}/src/common/spirv/spirv_instruction_parser_autogen.cpp"
+        "${ANGLE_SOURCE_DIR}/src/common/vulkan/libvulkan_loader.cpp"
+        "${ANGLE_SOURCE_DIR}/src/common/vulkan/vulkan_icd.cpp"
+        # Its own GN target, so it is not in vulkan_backend_sources. This is the
+        # only translation unit that instantiates VulkanMemoryAllocator.
+        "${ANGLE_SOURCE_DIR}/src/libANGLE/renderer/vulkan/vk_mem_alloc_wrapper.cpp"
+        # VulkanMemoryAllocator is header-only; vma.cpp is the single TU that
+        # instantiates it (Chromium adds it to the upstream checkout).
+        "${ANGLE_VMA_DIR}/vma.cpp"
+    )
+    # Matching VMA's own BUILD.gn. Both function-pointer modes are off because
+    # ANGLE hands VMA an explicit vtable of entry points it resolved via volk.
+    list(APPEND ANGLE_DEFINITIONS
+        VMA_DYNAMIC_VULKAN_FUNCTIONS=0
+        VMA_STATIC_VULKAN_FUNCTIONS=0
+        VMA_USE_STL_CONTAINERS=1
+    )
+endif ()
+
 # --- ANGLE core (translator + frontend + backends) -------------------------
 ANGLE_COLLECT_SOURCES(ANGLE_CORE_SOURCES
     libangle_common_sources
@@ -234,6 +310,8 @@ if (is_apple)
     ANGLE_COLLECT_SOURCES(_apple_glsl_sources angle_translator_glsl_apple_sources)
     list(APPEND ANGLE_CORE_SOURCES ${_apple_glsl_sources})
 endif ()
+
+list(APPEND ANGLE_CORE_SOURCES ${ANGLE_VULKAN_EXTRA_SOURCES})
 
 list(APPEND ANGLE_CORE_SOURCES
     "${ANGLE_SOURCE_DIR}/src/common/angle_version_info.cpp"

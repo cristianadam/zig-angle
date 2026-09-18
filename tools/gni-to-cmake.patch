@@ -1,0 +1,28 @@
+--- a/gni-to-cmake.py
++++ b/gni-to-cmake.py
+@@ -335,7 +335,13 @@
+         if self._is_excluded(path):
+             return []
+ 
+-        path = self.cwd / path
++        # GN spells repo-root-relative imports '//foo/bar.gni'. Joining that
++        # onto cwd yields a UNC path on Windows, so resolve it against the
++        # directory the tool was invoked from (the ANGLE root) instead.
++        if path.startswith('//'):
++            path = Path.cwd() / path[2:]
++        else:
++            path = self.cwd / path
+         return load_gn(path, self.exclude)
+ 
+     def fold_list(self, list):
+@@ -533,6 +539,10 @@
+                             self.visit(child, nindent)
+                             self.writef('\n')
+                         self.writef('%s)\n', indent)
++                else:
++                    # Right hand side is another list variable rather than a
++                    # literal, as in 'foo_sources += bar_sources'.
++                    self.writef(' ${%s})\n', ast[1])
+             # if then else
+             elif ast.type == 'if':
+                 if not len(ast[1]):
