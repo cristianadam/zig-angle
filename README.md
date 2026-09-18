@@ -194,32 +194,67 @@ uses the result as hints for `find_path`/`find_library`, and then Qt's own
 linking both. Installing the `.pc` files is what makes that work without
 hand-feeding Qt paths.
 
-Pointing Qt's find modules at a `dist/<triple>` resolves cleanly, link test
-included:
+qtbase 6.13.0 cross-compiles against this with zig cc, for both
+`x86_64-linux-gnu` and `aarch64-linux-gnu`, and `libQt6Gui.so` comes out linked
+against our `libGLESv2.so` and `libEGL.so`:
 
 ```
--- Found EGL: .../dist/aarch64-linux-gnu/include (found version "1.5")
--- Found GLESv2: .../dist/aarch64-linux-gnu/include
-   GLESv2_LIBRARY = .../lib/libGLESv2.so
-   EGL_LIBRARY    = .../lib/libEGL.so
+Building for: linux-clang (x86_64)      Compiler: clang 22.1.8
+  EGL .................................... yes
+  OpenGL ES 2.0 / 3.0 / 3.1 / 3.2 ........ yes
+  EGLFS .................................. yes
 ```
-
-So a Qt cross build wants roughly:
 
 ```sh
-<qt-src>/configure -opengl es2 -- \
-    -DCMAKE_TOOLCHAIN_FILE=<zig-angle>/toolchains/aarch64-linux-gnu.cmake \
-    -DCMAKE_PREFIX_PATH=<zig-angle>/dist/aarch64-linux-gnu \
-    -DCMAKE_FIND_ROOT_PATH=<zig-angle>/dist/aarch64-linux-gnu
+cmake -S <qt>/qtbase -B build-qt -G Ninja \
+    -DCMAKE_TOOLCHAIN_FILE=<zig-angle>/toolchains/x86_64-linux-gnu.cmake \
+    -DZIG_GLIBC_VERSION=2.34 \
+    -DQT_HOST_PATH=<host qt of the same version> \
+    -DCMAKE_PREFIX_PATH=<zig-angle>/dist/x86_64-linux-gnu \
+    -DINPUT_opengl=es2 \
+    -DFEATURE_dbus=OFF -DFEATURE_glib=OFF -DFEATURE_icu=OFF -DFEATURE_xcb=OFF
 ```
 
-Two caveats worth stating plainly. Qt's find modules and their link test are
-verified against this install tree; a **full Qt build has not been run**, and Qt
-needs a great deal more from a sysroot than GL — fontconfig, xkbcommon, the
-platform integration of your choice — none of which this project provides.
-And on Linux these libraries `dlopen` the vendor `libEGL.so.1` at runtime, so
-the target still needs a working driver stack; ANGLE is a translation layer,
-not a driver.
+Qt needs no patching for this: it sees an ordinary `linux-clang` build. The two
+adjustments both live in the toolchain and are described under *zig cc
+limitations* below - PCH must be off, and `ZIG_GLIBC_VERSION=2.34` is required
+because `qprocess_unix.cpp` calls `close_range()`.
+
+`QT_HOST_PATH` must point at a host Qt of *exactly* the version being built, so
+in practice you build host tools first; `-no-gui -no-widgets -nomake tests
+-nomake examples` is enough and takes a few minutes.
+
+**How far this runs.** The aarch64 build executes on a real target (tested under
+WSL), Qt loads the platform plugins, and Qt's EGL path opens and initialises an
+ANGLE display:
+
+```
+qt.qpa.plugin: Successfully loaded Qt platform plugin "eglfs"
+Initialized display 1 5
+```
+
+Getting that far needs the Vulkan backend plus `ANGLE_DEFAULT_PLATFORM=vulkan`
+in the environment, because Qt calls plain `eglGetDisplay(EGL_DEFAULT_DISPLAY)`
+and passes none of ANGLE's platform attributes. With the GL backend that
+returns `EGL_NO_DISPLAY`: `CreateDisplayFromAttribs` only reaches `DisplayEGL`
+when the caller asks for `EGL_PLATFORM_ANGLE_DEVICE_TYPE_EGL_ANGLE`, and
+nothing in the environment ever selects it. The Vulkan backend has a usable
+fallback, which this build enables with `ANGLE_USE_VULKAN_DISPLAY`.
+
+What does not work yet is a **window surface**. The only display ANGLE can
+offer without X11, Wayland or GBM compiled in is the offscreen one, so
+`eglCreateWindowSurface` fails with `EGL_BAD_NATIVE_WINDOW`, and eglfs's base
+device integration wants a `/dev/fb0` that a WSL container does not have. Both
+are limits of the *renderer* configuration and the test environment rather than
+of the cross build. Closing that gap means giving ANGLE a window system -
+`angle_use_x11`, `angle_use_wayland` or `angle_use_gbm` - each of which needs
+development headers zig does not bundle, so they would have to come from a
+sysroot.
+
+Also worth stating: Qt wants far more from a sysroot than GL - fontconfig,
+xkbcommon, the platform integration of your choice - none of which this project
+provides. The configuration above disables what it can and uses Qt's bundled
+copies of zlib, libpng, libjpeg, freetype, harfbuzz and pcre2.
 
 ## Targets and backends
 
@@ -503,6 +538,57 @@ the exported surface, so the same macros are defined empty instead.
 The expected result is roughly 828 `gl*` exports from libGLESv2 and 115 `egl*`
 from libEGL, which is what `angle.exports` checks.
 
+## zig cc limitations this toolchain works around
+
+These are not ANGLE-specific. They surfaced while cross-compiling other things
+with `toolchains/zig-cross.cmake` and are handled there, so anything built
+through it inherits the workarounds.
+
+**Precompiled headers do not work.** CMake drives clang with
+
+```sh
+-Xclang -emit-pch -x c++-header -o foo.pch -c foo.cxx
+```
+
+where `-Xclang -emit-pch` changes the cc1 action so a PCH comes out instead of
+an object. zig does not model that: it runs its own step over the result as if
+it were an object, and the linker rejects it with `ld.lld: error: foo.o:
+unknown file type`. Plain clang accepts the identical command line. Note this
+is specifically `-Xclang -emit-pch` together with `-c`; `-x c++-header` alone
+is fine. The toolchain sets `CMAKE_DISABLE_PRECOMPILE_HEADERS`; set
+`ZIG_ALLOW_PRECOMPILE_HEADERS` to undo that if a later zig fixes it.
+
+**Some glibc feature macros are exposed below the version that provides the
+function.** zig ships a single copy of recent glibc headers and gates the
+*declarations* by version, but not every *macro*. `bits/unistd_ext.h` is the
+one that bites:
+
+```c
+/* zig's copy - no version gate at all */
+#ifndef CLOSE_RANGE_CLOEXEC
+# define CLOSE_RANGE_CLOEXEC (1U << 2)
+#endif
+```
+
+zig targets glibc 2.31 by default, where `close_range()` does not exist, yet
+the macro is defined. Real glibc introduces both together in 2.34, so the
+ordinary idiom
+
+```c
+#ifdef CLOSE_RANGE_CLOEXEC
+    r = close_range(fd, INT_MAX, CLOSE_RANGE_CLOEXEC);
+#endif
+```
+
+compiles everywhere except here. qtbase's `qprocess_unix.cpp` does exactly
+this. Any `#ifdef` guard around a version-gated glibc function is exposed to
+it.
+
+Raise the floor with `-DZIG_GLIBC_VERSION=2.34`, which appends the version to
+the triple (`x86_64-linux-gnu.2.34`). The default is left at zig's 2.31 so the
+libraries stay portable; only raise it when a dependency demands it, since
+2.34 means Ubuntu 22.04 / RHEL 9 or newer.
+
 ## Layout
 
 ```
@@ -541,6 +627,7 @@ WebKit's `WEBKIT_*` CMake machinery is required.
 | `ANGLE_ENABLE_METAL`        | macOS Metal backend, `ON`                                    |
 | `ANGLE_ENABLE_CGL`          | macOS CGL backend, `OFF`                                     |
 | `ANGLE_BUILD_TESTS`         | build `angle_smoke`, `ON`                                    |
+| `ZIG_GLIBC_VERSION`         | pin the glibc floor for `*-linux-gnu`, e.g. `2.34`           |
 
 Each of `ZIG_EXECUTABLE`, `ZIG_CROSS_DIR` and `ANGLE_MACOS_SDK` also reads the
 same-named environment variable.

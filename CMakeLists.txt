@@ -257,6 +257,15 @@ if (ANGLE_ENABLE_VULKAN)
         list(APPEND ANGLE_DEFINITIONS VK_USE_PLATFORM_WIN32_KHR)
     elseif (is_apple)
         list(APPEND ANGLE_DEFINITIONS VK_USE_PLATFORM_METAL_EXT)
+    elseif (is_linux)
+        # Without this, the only route to a Vulkan display on Linux is an
+        # explicit EGL_PLATFORM_SURFACELESS_MESA in the attribute list, so a
+        # caller that just does eglGetDisplay(EGL_DEFAULT_DISPLAY) - which is
+        # every ordinary consumer, Qt included - gets EGL_NO_DISPLAY. The define
+        # enables the fallback in CreateDisplayFromAttribs that hands back
+        # CreateVulkanOffscreenDisplay when no window system was requested. The
+        # display backends it can reach are all compiled in already.
+        list(APPEND ANGLE_DEFINITIONS ANGLE_USE_VULKAN_DISPLAY)
     endif ()
     # vulkan_icd.cpp wants a path for the mock ICD manifest even though nothing
     # here ships one; it is only consulted when a test explicitly asks for the

@@ -31,6 +31,25 @@ if (NOT EXISTS "${ZIG_CROSS_DIR}/cmake/zig-toolchain.cmake")
         "Pass -DZIG_CROSS_DIR=<path to zig-cross checkout>.")
 endif ()
 
+# zig targets glibc 2.31 by default for *-linux-gnu, and a version can be
+# pinned by appending it to the triple. Raising the floor is occasionally
+# necessary because zig's glibc headers are one copy of a recent glibc with the
+# *declarations* version-gated but some *macros* not. bits/unistd_ext.h, for
+# instance, defines CLOSE_RANGE_CLOEXEC unconditionally while close_range()
+# itself only appears at 2.34 - so the usual "#ifdef CLOSE_RANGE_CLOEXEC then
+# call close_range()" reads as available and then fails to compile. qtbase does
+# exactly that. Build such projects with -DZIG_GLIBC_VERSION=2.34.
+if (NOT ZIG_GLIBC_VERSION AND DEFINED ENV{ZIG_GLIBC_VERSION})
+    set(ZIG_GLIBC_VERSION "$ENV{ZIG_GLIBC_VERSION}")
+endif ()
+if (ZIG_GLIBC_VERSION)
+    set(ZIG_GLIBC_VERSION "${ZIG_GLIBC_VERSION}" CACHE STRING
+        "glibc version to target for *-linux-gnu" FORCE)
+    if (ZIG_TARGET MATCHES "-gnu$")
+        set(ZIG_TARGET "${ZIG_TARGET}.${ZIG_GLIBC_VERSION}")
+    endif ()
+endif ()
+
 # Sets CMAKE_SYSTEM_NAME/PROCESSOR, ZIG_ARCH/ZIG_OS/ZIG_ABI and points the
 # compiler, ar, ranlib and rc at zig-cross's wrapper scripts.
 include("${ZIG_CROSS_DIR}/cmake/zig-toolchain.cmake")
@@ -70,6 +89,23 @@ endif ()
 # a clang on the host PATH and compile for the host triple.
 set(CMAKE_OBJC_COMPILER   ${CMAKE_C_COMPILER})
 set(CMAKE_OBJCXX_COMPILER ${CMAKE_CXX_COMPILER})
+
+# zig cc cannot build precompiled headers. CMake drives clang with
+#
+#     -Xclang -emit-pch -x c++-header -o foo.pch -c foo.cxx
+#
+# where -Xclang -emit-pch changes the cc1 action so a PCH comes out instead of
+# an object. zig does not model that: it runs its own step over the result as
+# if it were an object, and the linker rejects it with
+#
+#     ld.lld: error: foo.o: unknown file type
+#
+# Plain clang handles the same command line. Until zig understands the flag,
+# any project using this toolchain has to do without PCH - set
+# ZIG_ALLOW_PRECOMPILE_HEADERS to override if a future zig fixes it.
+if (NOT ZIG_ALLOW_PRECOMPILE_HEADERS)
+    set(CMAKE_DISABLE_PRECOMPILE_HEADERS ON)
+endif ()
 
 # Unlike plain clang, zig cc emits DWARF unless told not to, and CMake's
 # Release/MinSizeRel flags do not pass -g0. Left alone, libGLESv2.so ends up
