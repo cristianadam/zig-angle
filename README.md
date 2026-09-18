@@ -10,13 +10,19 @@ target is what a consumer of ANGLE actually needs:
 
 ```
 dist/<triple>/
-  include/            EGL/ GLES/ GLES2/ GLES3/ KHR/ GLSLANG/ platform/
-                      angle_gl.h  export.h
-  lib/                libGLESv2.so / .dylib, libEGL.so / .dylib
-                      (Windows: import libs libGLESv2.dll.a, libEGL.dll.a)
-  bin/                angle_smoke, the consumer test
-                      (Windows: also libGLESv2.dll, libEGL.dll)
+  include/              EGL/ GLES/ GLES2/ GLES3/ KHR/ GLSLANG/ platform/
+                        angle_gl.h  export.h
+  lib/                  libGLESv2.so / .dylib, libEGL.so / .dylib
+                        (Windows: import libs libGLESv2.dll.a, libEGL.dll.a)
+  lib/pkgconfig/        egl.pc, glesv2.pc
+  lib/cmake/ANGLE/      ANGLEConfig.cmake, ANGLEConfigVersion.cmake
+  bin/                  angle_smoke, the consumer test
+                        (Windows: also libGLESv2.dll, libEGL.dll)
 ```
+
+The workflow presets install, so `dist/<triple>` is populated by
+`cmake --workflow --preset <triple>`. The build tree holds only the libraries;
+headers and package metadata appear at install time.
 
 Nothing is copied out of or written into the WebKit checkout; `ANGLE_SOURCE_DIR`
 is read-only input.
@@ -144,6 +150,76 @@ $ cmake --workflow --preset aarch64-linux-gnu
 ```
 
 Use `ctest --preset <triple> -L static` to skip anything that needs a GPU.
+
+## Consuming the result
+
+Two discovery mechanisms are installed, because different build systems reach
+for different ones.
+
+**CMake.** `find_package(ANGLE)` gives you `ANGLE::GLESv2` and `ANGLE::EGL`:
+
+```cmake
+find_package(ANGLE REQUIRED)
+target_link_libraries(app PRIVATE ANGLE::EGL)   # pulls in ANGLE::GLESv2
+```
+
+```sh
+cmake -B b --toolchain <zig-angle>/toolchains/aarch64-linux-gnu.cmake \
+      -DCMAKE_PREFIX_PATH=<zig-angle>/dist/aarch64-linux-gnu
+```
+
+`ANGLE_BACKENDS` and `ANGLE_VERSION` are set too, so a consumer can check which
+renderers the build actually has.
+
+The config file is written by hand rather than produced by `install(EXPORT)`.
+libGLESv2 and libEGL link the ANGLE static library, zlib and (with Vulkan)
+SPIRV-Tools privately, and an exported target set would drag all of those into
+the package as `$<LINK_ONLY:...>` entries that consumers have no business
+seeing.
+
+**pkg-config.** `egl.pc` and `glesv2.pc` are relocatable — `prefix` is derived
+from `${pcfiledir}`, so moving the tree or mounting it elsewhere in a sysroot
+does not invalidate them:
+
+```sh
+PKG_CONFIG_PATH=<dist>/lib/pkgconfig pkg-config --cflags --libs egl
+```
+
+### Building Qt against it
+
+Qt does not look for a package called ANGLE. It goes through
+extra-cmake-modules' `FindEGL`, which starts with `pkg_check_modules(egl)` and
+uses the result as hints for `find_path`/`find_library`, and then Qt's own
+`FindGLESv2`, which does the same for GLESv2 and compiles a test program
+linking both. Installing the `.pc` files is what makes that work without
+hand-feeding Qt paths.
+
+Pointing Qt's find modules at a `dist/<triple>` resolves cleanly, link test
+included:
+
+```
+-- Found EGL: .../dist/aarch64-linux-gnu/include (found version "1.5")
+-- Found GLESv2: .../dist/aarch64-linux-gnu/include
+   GLESv2_LIBRARY = .../lib/libGLESv2.so
+   EGL_LIBRARY    = .../lib/libEGL.so
+```
+
+So a Qt cross build wants roughly:
+
+```sh
+<qt-src>/configure -opengl es2 -- \
+    -DCMAKE_TOOLCHAIN_FILE=<zig-angle>/toolchains/aarch64-linux-gnu.cmake \
+    -DCMAKE_PREFIX_PATH=<zig-angle>/dist/aarch64-linux-gnu \
+    -DCMAKE_FIND_ROOT_PATH=<zig-angle>/dist/aarch64-linux-gnu
+```
+
+Two caveats worth stating plainly. Qt's find modules and their link test are
+verified against this install tree; a **full Qt build has not been run**, and Qt
+needs a great deal more from a sysroot than GL — fontconfig, xkbcommon, the
+platform integration of your choice — none of which this project provides.
+And on Linux these libraries `dlopen` the vendor `libEGL.so.1` at runtime, so
+the target still needs a working driver stack; ANGLE is a translation layer,
+not a driver.
 
 ## Targets and backends
 
@@ -435,6 +511,8 @@ cmake/AngleSources.cmake     loads ANGLE's GN-generated .cmake source lists
 cmake/AngleZlib.cmake        fetches and builds a static zlib
 cmake/AngleMacosSdk.cmake    attaches a macOS SDK to a zig cross build
 cmake/AngleVerify.cmake      script-mode export/linkage checks, run by CTest
+cmake/AngleInstall.cmake     headers, pkg-config and the CMake package
+cmake/ANGLEConfig.cmake.in   template for find_package(ANGLE)
 toolchains/zig-cross.cmake   shared toolchain shim over zig-cross
 toolchains/<triple>.cmake    two lines each: set(ZIG_TARGET …) + include
 tests/angle_smoke.cpp        consumer test: WebGL-style context, draw, readback

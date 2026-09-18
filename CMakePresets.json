@@ -204,6 +204,118 @@
     {
       "name": "x86-windows-gnu-vulkan",
       "configurePreset": "x86-windows-gnu-vulkan"
+    },
+    {
+      "name": "x86_64-linux-gnu-install",
+      "configurePreset": "x86_64-linux-gnu",
+      "targets": [
+        "install"
+      ]
+    },
+    {
+      "name": "aarch64-linux-gnu-install",
+      "configurePreset": "aarch64-linux-gnu",
+      "targets": [
+        "install"
+      ]
+    },
+    {
+      "name": "x86_64-linux-musl-install",
+      "configurePreset": "x86_64-linux-musl",
+      "targets": [
+        "install"
+      ]
+    },
+    {
+      "name": "aarch64-linux-musl-install",
+      "configurePreset": "aarch64-linux-musl",
+      "targets": [
+        "install"
+      ]
+    },
+    {
+      "name": "x86_64-windows-gnu-install",
+      "configurePreset": "x86_64-windows-gnu",
+      "targets": [
+        "install"
+      ]
+    },
+    {
+      "name": "aarch64-windows-gnu-install",
+      "configurePreset": "aarch64-windows-gnu",
+      "targets": [
+        "install"
+      ]
+    },
+    {
+      "name": "x86-windows-gnu-install",
+      "configurePreset": "x86-windows-gnu",
+      "targets": [
+        "install"
+      ]
+    },
+    {
+      "name": "x86_64-macos-none-install",
+      "configurePreset": "x86_64-macos-none",
+      "targets": [
+        "install"
+      ]
+    },
+    {
+      "name": "aarch64-macos-none-install",
+      "configurePreset": "aarch64-macos-none",
+      "targets": [
+        "install"
+      ]
+    },
+    {
+      "name": "x86_64-linux-gnu-vulkan-install",
+      "configurePreset": "x86_64-linux-gnu-vulkan",
+      "targets": [
+        "install"
+      ]
+    },
+    {
+      "name": "aarch64-linux-gnu-vulkan-install",
+      "configurePreset": "aarch64-linux-gnu-vulkan",
+      "targets": [
+        "install"
+      ]
+    },
+    {
+      "name": "x86_64-linux-musl-vulkan-install",
+      "configurePreset": "x86_64-linux-musl-vulkan",
+      "targets": [
+        "install"
+      ]
+    },
+    {
+      "name": "aarch64-linux-musl-vulkan-install",
+      "configurePreset": "aarch64-linux-musl-vulkan",
+      "targets": [
+        "install"
+      ]
+    },
+    {
+      "name": "x86_64-windows-gnu-vulkan-install",
+      "configurePreset": "x86_64-windows-gnu-vulkan",
+      "targets": [
+        "install"
+      ]
+    },
+    {
+      "name": "aarch64-windows-gnu-vulkan-install",
+      "configurePreset": "aarch64-windows-gnu-vulkan",
+      "targets": [
+        "install"
+      ]
+    },
+    {
+      "name": "x86-windows-gnu-vulkan-install",
+      "configurePreset": "x86-windows-gnu-vulkan",
+      "targets": [
+        "install"
+      ]
     }
   ],
   "testPresets": [
@@ -314,6 +426,10 @@
         {
           "type": "test",
           "name": "x86_64-linux-gnu"
+        },
+        {
+          "type": "build",
+          "name": "x86_64-linux-gnu-install"
         }
       ]
     },
@@ -331,6 +447,10 @@
         {
           "type": "test",
           "name": "aarch64-linux-gnu"
+        },
+        {
+          "type": "build",
+          "name": "aarch64-linux-gnu-install"
         }
       ]
     },
@@ -348,6 +468,10 @@
         {
           "type": "test",
           "name": "x86_64-linux-musl"
+        },
+        {
+          "type": "build",
+          "name": "x86_64-linux-musl-install"
         }
       ]
     },
@@ -365,6 +489,10 @@
         {
           "type": "test",
           "name": "aarch64-linux-musl"
+        },
+        {
+          "type": "build",
+          "name": "aarch64-linux-musl-install"
         }
       ]
     },
@@ -382,6 +510,10 @@
         {
           "type": "test",
           "name": "x86_64-windows-gnu"
+        },
+        {
+          "type": "build",
+          "name": "x86_64-windows-gnu-install"
         }
       ]
     },
@@ -399,6 +531,10 @@
         {
           "type": "test",
           "name": "aarch64-windows-gnu"
+        },
+        {
+          "type": "build",
+          "name": "aarch64-windows-gnu-install"
         }
       ]
     },
@@ -416,6 +552,10 @@
         {
           "type": "test",
           "name": "x86-windows-gnu"
+        },
+        {
+          "type": "build",
+          "name": "x86-windows-gnu-install"
         }
       ]
     },
@@ -433,6 +573,10 @@
         {
           "type": "test",
           "name": "x86_64-macos-none"
+        },
+        {
+          "type": "build",
+          "name": "x86_64-macos-none-install"
         }
       ]
     },
@@ -450,6 +594,10 @@
         {
           "type": "test",
           "name": "aarch64-macos-none"
+        },
+        {
+          "type": "build",
+          "name": "aarch64-macos-none-install"
         }
       ]
     },
@@ -467,6 +615,10 @@
         {
           "type": "test",
           "name": "x86_64-linux-gnu-vulkan"
+        },
+        {
+          "type": "build",
+          "name": "x86_64-linux-gnu-vulkan-install"
         }
       ]
     },
@@ -484,6 +636,10 @@
         {
           "type": "test",
           "name": "aarch64-linux-gnu-vulkan"
+        },
+        {
+          "type": "build",
+          "name": "aarch64-linux-gnu-vulkan-install"
         }
       ]
     },
@@ -501,6 +657,10 @@
         {
           "type": "test",
           "name": "x86_64-linux-musl-vulkan"
+        },
+        {
+          "type": "build",
+          "name": "x86_64-linux-musl-vulkan-install"
         }
       ]
     },
@@ -518,6 +678,10 @@
         {
           "type": "test",
           "name": "aarch64-linux-musl-vulkan"
+        },
+        {
+          "type": "build",
+          "name": "aarch64-linux-musl-vulkan-install"
         }
       ]
     },
@@ -535,6 +699,10 @@
         {
           "type": "test",
           "name": "x86_64-windows-gnu-vulkan"
+        },
+        {
+          "type": "build",
+          "name": "x86_64-windows-gnu-vulkan-install"
         }
       ]
     },
@@ -552,6 +720,10 @@
         {
           "type": "test",
           "name": "aarch64-windows-gnu-vulkan"
+        },
+        {
+          "type": "build",
+          "name": "aarch64-windows-gnu-vulkan-install"
         }
       ]
     },
@@ -569,6 +741,10 @@
         {
           "type": "test",
           "name": "x86-windows-gnu-vulkan"
+        },
+        {
+          "type": "build",
+          "name": "x86-windows-gnu-vulkan-install"
         }
       ]
     }

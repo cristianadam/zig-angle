@@ -400,19 +400,26 @@ foreach (_t IN ITEMS ANGLE GLESv2 EGL)
 endforeach ()
 
 # --- Installation -----------------------------------------------------------
-foreach (_dir IN ITEMS EGL GLES GLES2 GLES3 KHR GLSLANG platform)
-    install(DIRECTORY "${ANGLE_SOURCE_DIR}/include/${_dir}"
-            DESTINATION include FILES_MATCHING PATTERN "*.h")
+# Which backends ended up in the build, for the package metadata.
+set(ANGLE_ENABLED_BACKENDS "")
+foreach (_b D3D11 D3D9 OPENGL METAL VULKAN)
+    if (ANGLE_ENABLE_${_b})
+        list(APPEND ANGLE_ENABLED_BACKENDS ${_b})
+    endif ()
 endforeach ()
-install(FILES
-    "${ANGLE_SOURCE_DIR}/include/angle_gl.h"
-    "${ANGLE_SOURCE_DIR}/include/export.h"
-    DESTINATION include)
+list(JOIN ANGLE_ENABLED_BACKENDS ", " ANGLE_ENABLED_BACKENDS)
 
-install(TARGETS GLESv2 EGL
-    RUNTIME DESTINATION bin
-    LIBRARY DESTINATION lib
-    ARCHIVE DESTINATION lib)
+# ANGLE's own version, so the installed package advertises the API level a
+# consumer actually gets rather than a number invented here.
+file(STRINGS "${ANGLE_SOURCE_DIR}/src/common/angle_version.h" _angle_version_lines
+     REGEX "#define ANGLE_(MAJOR|MINOR)_VERSION ")
+string(REGEX MATCH "ANGLE_MAJOR_VERSION ([0-9]+)" _m "${_angle_version_lines}")
+set(ANGLE_VERSION_MAJOR "${CMAKE_MATCH_1}")
+string(REGEX MATCH "ANGLE_MINOR_VERSION ([0-9]+)" _m "${_angle_version_lines}")
+set(ANGLE_VERSION_MINOR "${CMAKE_MATCH_1}")
+set(ANGLE_VERSION_PATCH 0)
+
+include(AngleInstall)
 
 option(ANGLE_BUILD_TESTS "Build the angle_smoke consumer test" ON)
 set(ANGLE_LLVM_TOOLS_DIR "" CACHE PATH
