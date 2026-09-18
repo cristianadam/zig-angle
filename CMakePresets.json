@@ -1,0 +1,141 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "installDir": "${sourceDir}/dist/${presetName}",
+      "toolchainFile": "${sourceDir}/toolchains/${presetName}.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "macos-base",
+      "hidden": true,
+      "inherits": "base",
+      "description": "Needs a macOS SDK; set the ANGLE_MACOS_SDK environment variable or pass -DANGLE_MACOS_SDK=<path>."
+    },
+
+    { "name": "x86_64-linux-gnu",    "inherits": "base",       "displayName": "Linux x86_64 (glibc)" },
+    { "name": "aarch64-linux-gnu",   "inherits": "base",       "displayName": "Linux arm64 (glibc)" },
+    { "name": "x86_64-linux-musl",   "inherits": "base",       "displayName": "Linux x86_64 (musl)" },
+    { "name": "aarch64-linux-musl",  "inherits": "base",       "displayName": "Linux arm64 (musl)" },
+    { "name": "x86_64-windows-gnu",  "inherits": "base",       "displayName": "Windows x86_64" },
+    { "name": "aarch64-windows-gnu", "inherits": "base",       "displayName": "Windows arm64" },
+    { "name": "x86-windows-gnu",     "inherits": "base",       "displayName": "Windows x86" },
+    { "name": "x86_64-macos-none",   "inherits": "macos-base", "displayName": "macOS x86_64" },
+    { "name": "aarch64-macos-none",  "inherits": "macos-base", "displayName": "macOS arm64" }
+  ],
+
+  "buildPresets": [
+    { "name": "x86_64-linux-gnu",    "configurePreset": "x86_64-linux-gnu" },
+    { "name": "aarch64-linux-gnu",   "configurePreset": "aarch64-linux-gnu" },
+    { "name": "x86_64-linux-musl",   "configurePreset": "x86_64-linux-musl" },
+    { "name": "aarch64-linux-musl",  "configurePreset": "aarch64-linux-musl" },
+    { "name": "x86_64-windows-gnu",  "configurePreset": "x86_64-windows-gnu" },
+    { "name": "aarch64-windows-gnu", "configurePreset": "aarch64-windows-gnu" },
+    { "name": "x86-windows-gnu",     "configurePreset": "x86-windows-gnu" },
+    { "name": "x86_64-macos-none",   "configurePreset": "x86_64-macos-none" },
+    { "name": "aarch64-macos-none",  "configurePreset": "aarch64-macos-none" }
+  ],
+
+  "testPresets": [
+    {
+      "name": "test-base",
+      "hidden": true,
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    },
+    { "name": "x86_64-linux-gnu",    "inherits": "test-base", "configurePreset": "x86_64-linux-gnu" },
+    { "name": "aarch64-linux-gnu",   "inherits": "test-base", "configurePreset": "aarch64-linux-gnu" },
+    { "name": "x86_64-linux-musl",   "inherits": "test-base", "configurePreset": "x86_64-linux-musl" },
+    { "name": "aarch64-linux-musl",  "inherits": "test-base", "configurePreset": "aarch64-linux-musl" },
+    { "name": "x86_64-windows-gnu",  "inherits": "test-base", "configurePreset": "x86_64-windows-gnu" },
+    { "name": "aarch64-windows-gnu", "inherits": "test-base", "configurePreset": "aarch64-windows-gnu" },
+    { "name": "x86-windows-gnu",     "inherits": "test-base", "configurePreset": "x86-windows-gnu" },
+    { "name": "x86_64-macos-none",   "inherits": "test-base", "configurePreset": "x86_64-macos-none" },
+    { "name": "aarch64-macos-none",  "inherits": "test-base", "configurePreset": "aarch64-macos-none" }
+  ],
+
+  "packagePresets": [],
+
+  "workflowPresets": [
+    {
+      "name": "x86_64-linux-gnu",
+      "steps": [
+        { "type": "configure", "name": "x86_64-linux-gnu" },
+        { "type": "build",     "name": "x86_64-linux-gnu" },
+        { "type": "test",      "name": "x86_64-linux-gnu" }
+      ]
+    },
+    {
+      "name": "aarch64-linux-gnu",
+      "steps": [
+        { "type": "configure", "name": "aarch64-linux-gnu" },
+        { "type": "build",     "name": "aarch64-linux-gnu" },
+        { "type": "test",      "name": "aarch64-linux-gnu" }
+      ]
+    },
+    {
+      "name": "x86_64-linux-musl",
+      "steps": [
+        { "type": "configure", "name": "x86_64-linux-musl" },
+        { "type": "build",     "name": "x86_64-linux-musl" },
+        { "type": "test",      "name": "x86_64-linux-musl" }
+      ]
+    },
+    {
+      "name": "aarch64-linux-musl",
+      "steps": [
+        { "type": "configure", "name": "aarch64-linux-musl" },
+        { "type": "build",     "name": "aarch64-linux-musl" },
+        { "type": "test",      "name": "aarch64-linux-musl" }
+      ]
+    },
+    {
+      "name": "x86_64-windows-gnu",
+      "steps": [
+        { "type": "configure", "name": "x86_64-windows-gnu" },
+        { "type": "build",     "name": "x86_64-windows-gnu" },
+        { "type": "test",      "name": "x86_64-windows-gnu" }
+      ]
+    },
+    {
+      "name": "aarch64-windows-gnu",
+      "steps": [
+        { "type": "configure", "name": "aarch64-windows-gnu" },
+        { "type": "build",     "name": "aarch64-windows-gnu" },
+        { "type": "test",      "name": "aarch64-windows-gnu" }
+      ]
+    },
+    {
+      "name": "x86-windows-gnu",
+      "steps": [
+        { "type": "configure", "name": "x86-windows-gnu" },
+        { "type": "build",     "name": "x86-windows-gnu" },
+        { "type": "test",      "name": "x86-windows-gnu" }
+      ]
+    },
+    {
+      "name": "x86_64-macos-none",
+      "steps": [
+        { "type": "configure", "name": "x86_64-macos-none" },
+        { "type": "build",     "name": "x86_64-macos-none" },
+        { "type": "test",      "name": "x86_64-macos-none" }
+      ]
+    },
+    {
+      "name": "aarch64-macos-none",
+      "steps": [
+        { "type": "configure", "name": "aarch64-macos-none" },
+        { "type": "build",     "name": "aarch64-macos-none" },
+        { "type": "test",      "name": "aarch64-macos-none" }
+      ]
+    }
+  ]
+}
