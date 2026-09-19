@@ -831,6 +831,79 @@ collides with it on a case-insensitive filesystem and the link fails with
 `cannot open output file foo: Is a directory`. Name the module and the
 executable differently.
 
+### Qt Quick 3D
+
+qtquick3d needs qtquicktimeline alongside it and builds the same way, but
+it is the module that finds the sharp edges, being much larger and
+vendoring assimp and tinyexr.
+
+First, its own submodule: `git submodule update --init` on the Qt super
+repository does not recurse, and qtquick3d carries assimp as a submodule of
+its own. Without it CMake stops at a missing
+`3rdparty/assimp/src/code/CApi/CInterfaceIOWrapper.cpp`.
+
+**cmd.exe's command line limit, twice.** The compilers this toolchain hands
+CMake are `.cmd` wrappers - a script, because `zig cc` is two words and
+CMake wants one executable - so every invocation is run by cmd.exe, whose
+limit is 8191 characters and not the 32767 Windows itself allows. assimp's
+importer plugin carries 94 preprocessor definitions and 80 include
+directories, which is enough to cross it:
+
+* AutoMoc's `moc_predefs` step reached 8531 characters. CMake runs that one
+  directly rather than through Ninja, so it cannot be given a response
+  file, and the only lever is shorter paths - building in `C:/q3dl` rather
+  than a descriptive directory was enough.
+* The resource compiler reached 8233. That one has a proper fix:
+  `toolchains/zig-windows-rules.cmake` drops `<DEFINES>` from CMake's RC
+  rule, since a version resource includes `<windows.h>` and reads `_DEBUG`,
+  which arrives through `<FLAGS>`. `<INCLUDES>` stays, because an `.rc` may
+  legitimately include a header from its own project. That takes it to
+  about 5400.
+
+Replacing the `.cmd` wrappers with real executables would lift the limit
+everywhere, at the cost of invalidating every existing build tree, CMake
+having recorded the compiler path.
+
+**zig's bundled headers outrank everyone else's.** On macOS the link failed
+with `undefined symbol: _uncompress`, from tinyexr. Qt's bundled zlib is
+built with `Z_PREFIX`, so QtCore exports `z_uncompress`, and on Linux
+tinyexr compiled a call to exactly that. On macOS it compiled a call to the
+unprefixed name, because the `zlib.h` it got was neither Qt's nor the
+SDK's:
+
+```
+$ zig cc -target aarch64-macos-none -isystem <qt>/include/QtZlib ... -E -H x.c
+. <zig>/lib/libc/include/any-darwin-any/zlib.h
+```
+
+Qt passes its include directories as `-isystem`, zig injects its own libc
+headers as `-I`, and clang searches the whole `-I` group before any
+`-isystem`. So on Apple targets zig's headers quietly win over both the
+project's and the SDK's; Linux escapes only because that `zlib.h` is
+Darwin-only in zig's tree. Passing `-I<qt>/include/QtZlib` through
+`CMAKE_CXX_FLAGS_INIT` puts Qt's header back in front, which keeps macOS on
+the same bundled zlib as the other two rather than mixing two
+implementations in one process.
+
+**Verified on Linux and Windows**, a `View3D` with a lit, animated cube:
+
+```
+$ QT_QPA_PLATFORM=xcb ANGLE_DEFAULT_PLATFORM=vulkan ./q3dangle
+platform   : "xcb"
+sg backend : 3
+bottom pixel: 0 128 0
+quick3d: PASS
+
+> q3dangle.exe
+platform   : "windows"
+sg backend : 3
+bottom pixel: 0 128 0
+quick3d: PASS
+```
+
+The pixel sampled is the `SceneEnvironment` clear colour, so the 3D
+renderer ran rather than just the 2D layer beneath it. macOS builds and
+links, and as ever has not been run.
 ### Vulkan, from an upstream ANGLE checkout
 
 WebKit's copy cannot build the Vulkan backend: there is no `Vulkan.cmake` source
@@ -1143,6 +1216,7 @@ cmake/AngleInstall.cmake     headers, pkg-config and the CMake package
 cmake/ANGLEConfig.cmake.in   template for find_package(ANGLE)
 toolchains/zig-cross.cmake   shared toolchain shim over zig-cross
 toolchains/zig-darwin-rules.cmake  Darwin link-rule fixes: -bundle, install names
+toolchains/zig-windows-rules.cmake  keeps the RC command line inside cmd.exe's limit
 toolchains/<triple>.cmake    two lines each: set(ZIG_TARGET …) + include
 tests/angle_smoke.cpp        consumer test: WebGL-style context, draw, readback
 tests/CMakeLists.txt         registers the CTest tests, picks a runner

@@ -127,6 +127,13 @@ endforeach ()
 # the link path. (ANGLE itself sidesteps this by naming the API-set library
 # directly; a third-party project cannot be asked to do that.)
 if (ZIG_OS STREQUAL "windows")
+    # Keep the resource compiler's command line short enough for cmd.exe; see
+    # the file for why that is the binding limit here.
+    if (NOT CMAKE_USER_MAKE_RULES_OVERRIDE)
+        set(CMAKE_USER_MAKE_RULES_OVERRIDE
+            "${CMAKE_CURRENT_LIST_DIR}/zig-windows-rules.cmake")
+    endif ()
+
     if (ZIG_EXECUTABLE)
         set(ZIG_EXECUTABLE_RESOLVED "${ZIG_EXECUTABLE}")
     else ()
