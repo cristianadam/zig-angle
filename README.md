@@ -241,15 +241,39 @@ when the caller asks for `EGL_PLATFORM_ANGLE_DEVICE_TYPE_EGL_ANGLE`, and
 nothing in the environment ever selects it. The Vulkan backend has a usable
 fallback, which this build enables with `ANGLE_USE_VULKAN_DISPLAY`.
 
-What does not work yet is a **window surface**. The only display ANGLE can
-offer without X11, Wayland or GBM compiled in is the offscreen one, so
-`eglCreateWindowSurface` fails with `EGL_BAD_NATIVE_WINDOW`, and eglfs's base
-device integration wants a `/dev/fb0` that a WSL container does not have. Both
-are limits of the *renderer* configuration and the test environment rather than
-of the cross build. Closing that gap means giving ANGLE a window system -
-`angle_use_x11`, `angle_use_wayland` or `angle_use_gbm` - each of which needs
-development headers zig does not bundle, so they would have to come from a
-sysroot.
+Window surfaces need one more choice. The display that fallback lands on is
+itself a compile-time decision, set with `ANGLE_VULKAN_DISPLAY_MODE`:
+
+| Mode        | Display                        | Window surfaces                    |
+| ----------- | ------------------------------ | ---------------------------------- |
+| `offscreen` | `CreateVulkanOffscreenDisplay` | no - `EGL_BAD_NATIVE_WINDOW`       |
+| `headless`  | `VK_EXT_headless_surface`      | yes, with no display hardware      |
+| `simple`    | `VK_KHR_display`               | yes, scanning out to a connector   |
+
+`offscreen` is the default because it asks least of the driver. With
+`-DANGLE_VULKAN_DISPLAY_MODE=headless` a full Qt application runs:
+
+```
+$ QT_QPA_PLATFORM=eglfs QT_QPA_EGLFS_INTEGRATION=none \
+  ANGLE_DEFAULT_PLATFORM=vulkan ./qtgl
+GL_VENDOR  : Google Inc. (Mesa)
+GL_RENDERER: ANGLE (Mesa, Vulkan 1.4.318 (llvmpipe (LLVM 20.1.2 128 bits)), llvmpipe-25.2.8)
+GL_VERSION : OpenGL ES 3.1 (ANGLE 2.1.1 git hash: 97941c8fa290)
+qtgl: PASS
+```
+
+That is Qt's eglfs QPA plugin, going through EGL into ANGLE, onto Vulkan. Two
+environment settings are doing real work there. `QT_QPA_EGLFS_INTEGRATION=none`
+selects eglfs's base device integration rather than a vendor one, and because
+that integration insists on opening a framebuffer node, `QT_QPA_EGLFS_FB` has
+to point somewhere readable (`/dev/zero` will do) with
+`QT_QPA_EGLFS_WIDTH`/`HEIGHT` supplying the size. On real hardware with a
+framebuffer or a KMS device none of that is needed.
+
+`simple` mode is the one for actual display hardware, and it is also what Qt's
+own `vkkhrdisplay` platform plugin wants. Be aware that a driver can advertise
+`VK_KHR_display` and still report no displays - llvmpipe does exactly that, so
+neither `simple` mode nor `vkkhrdisplay` is testable under WSL.
 
 Also worth stating: Qt wants far more from a sysroot than GL - fontconfig,
 xkbcommon, the platform integration of your choice - none of which this project
@@ -655,6 +679,7 @@ WebKit's `WEBKIT_*` CMake machinery is required.
 | `ANGLE_ENABLE_CGL`          | macOS CGL backend, `OFF`                                     |
 | `ANGLE_BUILD_TESTS`         | build `angle_smoke`, `ON`                                    |
 | `ZIG_GLIBC_VERSION`         | pin the glibc floor for `*-linux-gnu`, e.g. `2.34`           |
+| `ANGLE_VULKAN_DISPLAY_MODE` | Linux Vulkan display: `offscreen`, `headless` or `simple`    |
 
 Each of `ZIG_EXECUTABLE`, `ZIG_CROSS_DIR` and `ANGLE_MACOS_SDK` also reads the
 same-named environment variable.

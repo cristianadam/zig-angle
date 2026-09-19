@@ -262,10 +262,33 @@ if (ANGLE_ENABLE_VULKAN)
         # explicit EGL_PLATFORM_SURFACELESS_MESA in the attribute list, so a
         # caller that just does eglGetDisplay(EGL_DEFAULT_DISPLAY) - which is
         # every ordinary consumer, Qt included - gets EGL_NO_DISPLAY. The define
-        # enables the fallback in CreateDisplayFromAttribs that hands back
-        # CreateVulkanOffscreenDisplay when no window system was requested. The
-        # display backends it can reach are all compiled in already.
+        # enables the fallback in CreateDisplayFromAttribs that hands back a
+        # display when no window system was requested. The display backends it
+        # can reach are all compiled in already.
         list(APPEND ANGLE_DEFINITIONS ANGLE_USE_VULKAN_DISPLAY)
+
+        # Which of them that fallback picks is also a compile-time choice, and
+        # it decides whether you get window surfaces at all:
+        #
+        #   offscreen  CreateVulkanOffscreenDisplay. Pbuffers only;
+        #              eglCreateWindowSurface fails with EGL_BAD_NATIVE_WINDOW.
+        #   headless   VK_EXT_headless_surface. Real window surfaces with no
+        #              display hardware, which is what a container or CI wants.
+        #   simple     VK_KHR_display, scanning out to an actual connector.
+        #              Needs the driver to report a display - llvmpipe, for one,
+        #              advertises the extension and then reports zero.
+        set(ANGLE_VULKAN_DISPLAY_MODE "offscreen" CACHE STRING
+            "Vulkan display reached by eglGetDisplay on Linux")
+        set_property(CACHE ANGLE_VULKAN_DISPLAY_MODE PROPERTY STRINGS
+            offscreen headless simple)
+        if (ANGLE_VULKAN_DISPLAY_MODE STREQUAL "headless")
+            list(APPEND ANGLE_DEFINITIONS ANGLE_VULKAN_DISPLAY_MODE_HEADLESS)
+        elseif (ANGLE_VULKAN_DISPLAY_MODE STREQUAL "simple")
+            list(APPEND ANGLE_DEFINITIONS ANGLE_VULKAN_DISPLAY_MODE_SIMPLE)
+        elseif (NOT ANGLE_VULKAN_DISPLAY_MODE STREQUAL "offscreen")
+            message(FATAL_ERROR
+                "zig-angle: ANGLE_VULKAN_DISPLAY_MODE must be offscreen, headless or simple")
+        endif ()
     endif ()
     # vulkan_icd.cpp wants a path for the mock ICD manifest even though nothing
     # here ships one; it is only consulted when a test explicitly asks for the
