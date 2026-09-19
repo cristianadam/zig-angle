@@ -733,25 +733,35 @@ installed target Qt, both modules cross-compile with zig cc the same way
 qtbase does - an ordinary CMake configure with the triple's toolchain file:
 
 ```sh
-cmake -S <qt>/qtshadertools -B build-shadertools -G Ninja \
-    -DCMAKE_TOOLCHAIN_FILE=<zig-angle>/toolchains/aarch64-linux-gnu.cmake \
-    -DZIG_GLIBC_VERSION=2.39 -DZIG_SYSROOT=<sysroot> \
-    -DCMAKE_PREFIX_PATH="<target qt>;<zig-angle>/dist/aarch64-linux-gnu-vulkan-x11" \
-    -DCMAKE_INSTALL_PREFIX=<target qt> \
-    -DQT_HOST_PATH=<host qt> \
-    -DQT_BUILD_TESTS=OFF -DQT_BUILD_EXAMPLES=OFF
+ANGLE_PREFIX=<zig-angle>/dist/aarch64-linux-gnu-vulkan-x11 \
+tools/xbuild-qt-module.sh <qt>/qtshadertools \
+    <zig-angle>/toolchains/aarch64-linux-gnu.cmake \
+    <target qt> <host qt> \
+    -DZIG_GLIBC_VERSION=2.39 -DZIG_SYSROOT=<sysroot>
 ```
 
-and the same again for qtdeclarative afterwards. Only qtbase is a hard
-dependency of either; qtshadertools is listed as optional for qtdeclarative
-but Qt Quick's scene graph shaders want it.
+and the same again for qtdeclarative afterwards - each module installs into
+the target Qt's prefix, so build them in dependency order. The script is a
+`cmake` configure, build and install with the arguments a cross build needs,
+and its usage comment lists what each target tends to want on top. Only
+qtbase is a hard dependency of either module; qtshadertools is listed as
+optional for qtdeclarative but Qt Quick's scene graph shaders want it.
 
 **The host Qt needs its GUI.** A `-no-gui -no-widgets` host build is enough
 for moc and rcc, which is all qtbase asks for, and it cannot build these two:
 qtshadertools uses QtGui's rhi, and qtdeclarative is Qt Quick. Without it
 there is no `qsb`, `qmltyperegistrar`, `qmlcachegen` or `qmlimportscanner` for
-the cross build to call. Rebuild the host qtbase with the GUI in, into the
-same prefix, then build host qtshadertools and host qtdeclarative against it.
+the cross build to call. `tools/build-host-qt.sh` does the whole host side -
+qtbase with the GUI in, then the two modules, all into one prefix:
+
+```sh
+# from an environment where the native compiler works, e.g. a VS prompt
+tools/build-host-qt.sh <qt source root> <host prefix>
+```
+
+It reuses existing build directories, so pointing it at a prefix that already
+has some of this is cheap, and it reports at the end which of the tools came
+out.
 
 **Verified on Linux and Windows.** A Qt Quick application cross-compiled
 here runs on both, scene graph and all - under WSLg through the xcb plugin,
@@ -1139,6 +1149,8 @@ tests/CMakeLists.txt         registers the CTest tests, picks a runner
 CMakePresets.json            one configure/build/test/workflow preset per triple
 tools/gni-to-cmake.patch     two fixes to WebKit's GN-to-CMake converter
 tools/make-linux-sysroot.sh  builds the ZIG_SYSROOT tree from distribution packages
+tools/build-host-qt.sh       native host Qt plus the modules whose tools a cross build needs
+tools/xbuild-qt-module.sh    cross-builds one Qt module against an installed target Qt
 patches/qtbase-angle-eglfs.patch  makes Qt able to use ANGLE on Windows/macOS
 patches/qtdeclarative-cross-codesign.patch  do not codesign when the host is not a Mac
 ```
