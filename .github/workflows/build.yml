@@ -1,0 +1,152 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # Developed against 0.17.0-dev.2163+89ff10d56. Dev tarballs are pruned from
+  # ziglang.org after a while, so pinning one makes the workflow rot; master is
+  # the honest choice for a project that tracks a development compiler, at the
+  # cost of upstream zig being able to break the build. 0.16.0 is not an option,
+  # it access-violates on ARM64 Windows.
+  ZIG_VERSION: master
+
+jobs:
+  # Everything except Apple. zig cross-compiles, so one Linux runner builds the
+  # Linux and Windows targets alike; the tests that need to execute the result
+  # only do so for x86_64 Linux, which is what the runner is.
+  cross:
+    name: ${{ matrix.preset }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        preset:
+          - x86_64-linux-gnu
+          - x86_64-linux-musl
+          - aarch64-linux-gnu
+          - aarch64-linux-musl
+          - x86_64-windows-gnu
+          - aarch64-windows-gnu
+          - x86-windows-gnu
+          - x86_64-linux-gnu-vulkan
+          - aarch64-linux-gnu-vulkan
+          - x86_64-windows-gnu-vulkan
+          - aarch64-windows-gnu-vulkan
+          - x86_64-linux-gnu-vulkan-x11
+          - aarch64-linux-gnu-vulkan-x11
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build llvm python3-ply
+
+      - name: Prepare the ANGLE checkout
+        run: tools/prepare-angle.sh
+
+      # The x11 presets need xcb and friends for the target, which zig does not
+      # bundle. Same mechanism as everywhere else: unpack the distribution's own
+      # packages into a sysroot, no root required.
+      - name: Build the target sysroot
+        if: endsWith(matrix.preset, '-x11')
+        run: |
+          arch=amd64
+          case "${{ matrix.preset }}" in aarch64-*) arch=arm64 ;; esac
+          tools/make-linux-sysroot.sh "$RUNNER_TEMP/sysroot" "$arch"
+          echo "ZIG_SYSROOT=$RUNNER_TEMP/sysroot" >> "$GITHUB_ENV"
+          echo "ZIG_GLIBC_VERSION=2.39" >> "$GITHUB_ENV"
+
+      - name: Build and test
+        env:
+          ANGLE_LLVM_TOOLS_DIR: /usr/bin
+        run: cmake --workflow --preset ${{ matrix.preset }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.preset }}
+          path: dist/${{ matrix.preset }}
+          if-no-files-found: error
+
+  # Apple targets need an Apple SDK, which cannot be redistributed - so build
+  # them on a macOS runner, where Xcode's is already there. This also exercises
+  # the toolchain with a non-Windows host, which is the only configuration in
+  # which the Darwin install-name workaround is not needed.
+  macos:
+    name: ${{ matrix.preset }}
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        preset:
+          - aarch64-macos-none
+          - x86_64-macos-none
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Install build dependencies
+        run: |
+          brew install ninja llvm
+          python3 -m pip install --break-system-packages ply
+
+      - name: Prepare the ANGLE checkout
+        run: tools/prepare-angle.sh
+
+      - name: Build and test
+        env:
+          # Xcode's SDK, rather than a copy carried around. The toolchain only
+          # needs the root; it attaches the headers and frameworks itself.
+          ANGLE_MACOS_SDK: ${{ github.workspace }}/.sdk
+        run: |
+          ln -s "$(xcrun --show-sdk-path)" .sdk
+          # Xcode ships nm, not llvm-nm, which is the name the export checks
+          # look for; brew's llvm has it.
+          export ANGLE_LLVM_TOOLS_DIR="$(brew --prefix llvm)/bin"
+          cmake --workflow --preset ${{ matrix.preset }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.preset }}
+          path: dist/${{ matrix.preset }}
+          if-no-files-found: error
+
+  # The Windows binaries are built above but nothing there can run them. Take
+  # the artifact and execute the smoke test on a real Windows machine.
+  windows-run:
+    name: run x86_64-windows-gnu
+    needs: cross
+    runs-on: windows-2022
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: x86_64-windows-gnu
+          path: dist
+      - name: Run the smoke test
+        shell: cmd
+        # 77 is the test's own "no usable backend here", which a runner with
+        # no GPU is entitled to report; anything else non-zero is a failure.
+        run: |
+          cd dist\bin
+          angle_smoke.exe
+          set rc=%errorlevel%
+          echo angle_smoke exited %rc%
+          if "%rc%"=="0" exit /b 0
+          if "%rc%"=="77" exit /b 0
+          exit /b 1

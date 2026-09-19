@@ -924,13 +924,24 @@ no preset for it, because on macOS it is a strictly longer path to the same
 place (see the SDK section below). Configuring it against a tree
 with no `Vulkan.cmake` fails with instructions rather than a wall of errors.
 
-**Preparing the upstream checkout.** `gclient sync` pulls gigabytes of Chromium
-build infrastructure; almost none of it is needed here. ANGLE carries its own
-SPIR-V builder and parser in `src/common/spirv`, vendors volk in
-`src/third_party/volk`, and checks the Vulkan internal shaders in pre-compiled
-as `vk_internal_shaders_autogen.cpp` — so glslang is a generation-time tool,
-not a build dependency. What is actually required is four dependencies at the
-revisions pinned in `DEPS`, three of them header-only:
+**Preparing the checkout.** ANGLE is carried as a submodule at
+`third_party/angle`, and it serves every target - the Vulkan backend is a
+build option, not a different checkout. One script gets it ready:
+
+```sh
+git submodule update --init
+tools/prepare-angle.sh
+```
+
+Two things are missing from a bare clone and that is what the script supplies.
+
+*Dependencies.* ANGLE's are gclient `DEPS` rather than submodules, and
+`gclient sync` pulls gigabytes of Chromium build infrastructure, almost none of
+it needed here: ANGLE carries its own SPIR-V builder and parser in
+`src/common/spirv`, vendors volk in `src/third_party/volk`, and checks the
+Vulkan internal shaders in pre-compiled as `vk_internal_shaders_autogen.cpp`,
+so glslang is a generation-time tool rather than a build dependency. Five
+directories are actually required, three of them header-only:
 
 | Path under the checkout                | What for            |
 | -------------------------------------- | ------------------- |
@@ -940,49 +951,37 @@ revisions pinned in `DEPS`, three of them header-only:
 | `third_party/spirv-tools/src`           | the one real build  |
 | `third_party/zlib`                      | `compression_utils_portable.cc` |
 
-Each is a `git init` + `git fetch --depth 1 <url> <rev>` + `git checkout
-FETCH_HEAD` away. Two of them are only reachable from the Chromium mirrors
-rather than GitHub, VMA included — its pinned SHA does not exist upstream.
-SPIRV-Tools is added with `add_subdirectory`; it generates its grammar tables
-with Python, so nothing has to be compiled for the host and it cross-compiles
-like any other library.
+Each is a shallow fetch of one revision, read out of the checkout's own `DEPS`
+so it follows whatever commit the submodule is pinned to. They come from the
+Chromium mirrors that `DEPS` names, which for VulkanMemoryAllocator is the only
+option - its pinned revision does not exist upstream. SPIRV-Tools is added with
+`add_subdirectory`; it generates its grammar tables with Python, so nothing has
+to be compiled for the host and it cross-compiles like any other library.
 
-Then generate the CMake source lists with the converter WebKit ships:
+*Generated source lists.* The build reads ANGLE's file lists from
+`Compiler.cmake` and friends, produced from the GN build files by the converter
+WebKit ships. Upstream ANGLE does not carry that script, so the first run
+fetches it from a pinned WebKit revision - or copies it from a local checkout
+if `WEBKIT_ANGLE_DIR` points at one - and applies `tools/gni-to-cmake.patch`.
+The revision is pinned because the patch has to apply.
 
-```sh
-cp <webkit>/Source/ThirdParty/ANGLE/gni-to-cmake.py .
-pip install ply
-export PYTHONUTF8=1
-python gni-to-cmake.py src/compiler.gni Compiler.cmake
-python gni-to-cmake.py src/libGLESv2.gni GLESv2.cmake
-python gni-to-cmake.py src/libANGLE/renderer/gl/BUILD.gn GL.cmake --prepend src/libANGLE/renderer/gl/
-python gni-to-cmake.py src/libANGLE/renderer/d3d/BUILD.gn D3D.cmake --prepend src/libANGLE/renderer/d3d/
-python gni-to-cmake.py src/libANGLE/renderer/metal/BUILD.gn Metal.cmake --prepend src/libANGLE/renderer/metal/
-python gni-to-cmake.py src/libANGLE/renderer/vulkan/BUILD.gn Vulkan.cmake --prepend src/libANGLE/renderer/vulkan/
-```
-
-That script needs two fixes first, neither of which WebKit hit because it never
-generated a Vulkan list. They are in `tools/gni-to-cmake.patch`:
-
-```sh
-patch -p1 < <zig-angle>/tools/gni-to-cmake.patch
-```
-
-
-(`PYTHONUTF8=1` is the third thing you need, and is not a patch: without it the
-script reads `.gni` files as cp1252 and dies on the first non-ASCII byte.)
+That patch is two fixes, neither of which WebKit hit because it never generated
+a Vulkan list:
 
 * Root-relative GN imports, spelled `//build_overrides/swiftshader.gni`, are
   joined onto the current directory and become UNC paths on Windows. They have
   to resolve against the ANGLE root.
 * `foo_sources += bar_sources`, where the right hand side is another list
   variable rather than a literal, emits `list(APPEND foo_sources` and then
-  nothing — no items, no closing paren — which swallows the next statement.
-  It needs to emit `${bar_sources})`. Exactly one line in the Vulkan GN hits
-  this, and it corrupts the whole file.
+  nothing - no items, no closing paren - which swallows the next statement. It
+  needs to emit `${bar_sources})`. Exactly one line in the Vulkan GN hits this,
+  and it corrupts the whole file.
 
-The patch is against WebKit's copy of the script, which is the one to start
-from; the converter itself is Apple's, under the BSD licence in its header.
+A third thing is needed and is not a patch: `PYTHONUTF8=1`, which the script
+sets, because without it the converter reads `.gni` files as cp1252 and dies on
+the first non-ASCII byte. It also wants `ply`.
+
+The converter itself is Apple's, under the BSD licence in its header.
 
 Unlike WebKit's copy, an upstream checkout has no checked-in `angle_commit.h` or
 `ANGLEShaderProgramVersion.h`; `cmake/AngleGeneratedHeaders.cmake` runs ANGLE's
@@ -1204,6 +1203,44 @@ the triple (`x86_64-linux-gnu.2.34`). The default is left at zig's 2.31 so the
 libraries stay portable; only raise it when a dependency demands it, since
 2.34 means Ubuntu 22.04 / RHEL 9 or newer.
 
+## Continuous integration
+
+`.github/workflows/build.yml` builds every target on three runners:
+
+| Job | Runner | Targets |
+| --- | ------ | ------- |
+| `cross` | `ubuntu-24.04` | the Linux and Windows triples, plus the Vulkan and X11 variants |
+| `macos` | `macos-14` | `aarch64-macos-none`, `x86_64-macos-none` |
+| `windows-run` | `windows-2022` | runs the smoke test out of the artifact the first job built |
+
+zig cross-compiles, so one Linux runner covers the Windows targets too, and
+each job is just `cmake --workflow --preset <triple>` after
+`tools/prepare-angle.sh`. The X11 presets call `tools/make-linux-sysroot.sh`
+first, which needs no root and so works on a hosted runner.
+
+Apple is the exception that needs its own runner. The SDK cannot be
+redistributed, but a macOS runner already has Xcode's, and pointing
+`ANGLE_MACOS_SDK` at `xcrun --show-sdk-path` is all it takes. That job is also
+the only place this toolchain runs with a host that is not Windows - which is
+the configuration where the install-name workaround correctly does nothing.
+
+The smoke test runs wherever the target can execute: natively on the Linux
+runner for a matching glibc triple, natively on the macOS runner, and for
+Windows by handing the artifact to `windows-run`. A hosted runner may well have
+no usable GPU, and the test reports that as exit 77 rather than failing.
+
+zig is taken from `master` rather than pinned. Dev tarballs are pruned from
+ziglang.org after a while, so a pinned one would rot; the cost is that upstream
+zig can break the build. 0.16.0 is not an option - it access-violates on ARM64
+Windows.
+
+**This workflow has not been run.** There is no way to execute GitHub Actions
+from here, so it is written from what the builds need rather than from a green
+tick. What *has* been checked locally is the part it depends on: a bare clone of
+the submodule, `prepare-angle.sh` against it, and then
+`cmake --workflow --preset x86_64-linux-gnu-vulkan` with nothing else
+configured, which finds the submodule by itself and passes.
+
 ## Layout
 
 ```
@@ -1222,11 +1259,14 @@ tests/angle_smoke.cpp        consumer test: WebGL-style context, draw, readback
 tests/CMakeLists.txt         registers the CTest tests, picks a runner
 CMakePresets.json            one configure/build/test/workflow preset per triple
 tools/gni-to-cmake.patch     two fixes to WebKit's GN-to-CMake converter
+tools/prepare-angle.sh       fetches ANGLE's DEPS and generates its CMake source lists
 tools/make-linux-sysroot.sh  builds the ZIG_SYSROOT tree from distribution packages
 tools/build-host-qt.sh       native host Qt plus the modules whose tools a cross build needs
 tools/xbuild-qt-module.sh    cross-builds one Qt module against an installed target Qt
 patches/qtbase-angle-eglfs.patch  makes Qt able to use ANGLE on Windows/macOS
 patches/qtdeclarative-cross-codesign.patch  do not codesign when the host is not a Mac
+third_party/angle            upstream ANGLE, submodule; serves every target
+.github/workflows/build.yml  builds every target on Linux, macOS and Windows runners
 ```
 
 `cmake/AngleSources.cmake` includes `Compiler.cmake`, `GLESv2.cmake`,

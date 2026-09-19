@@ -121,6 +121,18 @@ elseif (is_linux AND CMAKE_HOST_WIN32 AND ZIG_ABI MATCHES "^gnu")
             endif ()
         endif ()
     endif ()
+
+elseif (is_linux AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux"
+        AND ZIG_ABI MATCHES "^gnu" AND ZIG_ARCH IN_LIST _runnable_arches)
+    # A Linux host running a Linux target of an architecture it can execute.
+    # glibc only: a musl target brings its own loader, which is not installed.
+    set(_angle_runner $<TARGET_FILE:angle_smoke>)
+    set(_angle_runner_note "natively on this Linux host")
+
+elseif (is_apple AND CMAKE_HOST_APPLE AND ZIG_ARCH IN_LIST _runnable_arches)
+    # Rosetta runs x86_64 on an arm64 Mac, and _runnable_arches already says so.
+    set(_angle_runner $<TARGET_FILE:angle_smoke>)
+    set(_angle_runner_note "natively on this macOS host")
 endif ()
 
 if (_angle_runner)

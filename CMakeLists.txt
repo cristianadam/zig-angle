@@ -11,10 +11,15 @@ cmake_minimum_required(VERSION 3.25)
 
 project(zig-angle LANGUAGES C CXX)
 
-# -D wins, then the environment, then WebKit's in-tree copy. The Vulkan
-# backend needs this pointed at an upstream checkout instead.
+# -D wins, then the environment, then the upstream checkout carried as a
+# submodule, then WebKit's copy if one happens to be lying around at the path
+# this was first developed against. The submodule serves every target, Vulkan
+# included; run tools/prepare-angle.sh once to fetch its dependencies and
+# generate the source lists.
 if (DEFINED ENV{ANGLE_SOURCE_DIR})
     set(_angle_source_dir_default "$ENV{ANGLE_SOURCE_DIR}")
+elseif (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/angle/src/libGLESv2.gni")
+    set(_angle_source_dir_default "${CMAKE_CURRENT_SOURCE_DIR}/third_party/angle")
 else ()
     set(_angle_source_dir_default "C:/Projects/github/WebKit/Source/ThirdParty/ANGLE")
 endif ()

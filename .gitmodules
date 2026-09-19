@@ -1,0 +1,7 @@
+[submodule "third_party/angle"]
+	path = third_party/angle
+	url = https://github.com/google/angle.git
+	# tools/prepare-angle.sh writes the fetched dependencies and the generated
+	# CMake source lists into this working tree on purpose, so it is always
+	# "dirty" and saying so on every git status is only noise.
+	ignore = dirty
