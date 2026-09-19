@@ -129,8 +129,12 @@ elseif (is_linux AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux"
     set(_angle_runner $<TARGET_FILE:angle_smoke>)
     set(_angle_runner_note "natively on this Linux host")
 
-elseif (is_apple AND CMAKE_HOST_APPLE AND ZIG_ARCH IN_LIST _runnable_arches)
-    # Rosetta runs x86_64 on an arm64 Mac, and _runnable_arches already says so.
+elseif (is_apple AND CMAKE_HOST_APPLE AND ZIG_ARCH STREQUAL _host_arch)
+    # Exact architecture only. Rosetta would run an x86_64 binary on an arm64
+    # Mac, but it is an optional install rather than something to assume - and
+    # assuming it turns "cannot run this" into a failed test instead of a
+    # skipped one. Windows is different: its arm64 emulation is always there,
+    # which is why that branch consults _runnable_arches.
     set(_angle_runner $<TARGET_FILE:angle_smoke>)
     set(_angle_runner_note "natively on this macOS host")
 endif ()

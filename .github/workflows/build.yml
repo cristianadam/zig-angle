@@ -14,33 +14,38 @@ env:
   ZIG_VERSION: master
 
 jobs:
-  # Everything except Apple. zig cross-compiles, so one Linux runner builds the
-  # Linux and Windows targets alike; the tests that need to execute the result
-  # only do so for x86_64 Linux, which is what the runner is.
+  # Everything except Apple. zig cross-compiles, so the Windows targets are
+  # built on Linux as well; the runner architecture is matched to the target
+  # wherever one exists, which keeps the sysroot native and lets the smoke test
+  # actually run instead of being skipped for want of anything to run it on.
   cross:
     name: ${{ matrix.preset }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        preset:
-          - x86_64-linux-gnu
-          - x86_64-linux-musl
-          - aarch64-linux-gnu
-          - aarch64-linux-musl
-          - x86_64-windows-gnu
-          - aarch64-windows-gnu
-          - x86-windows-gnu
-          - x86_64-linux-gnu-vulkan
-          - aarch64-linux-gnu-vulkan
-          - x86_64-windows-gnu-vulkan
-          - aarch64-windows-gnu-vulkan
-          - x86_64-linux-gnu-vulkan-x11
-          - aarch64-linux-gnu-vulkan-x11
+        include:
+          - { preset: x86_64-linux-gnu,             os: ubuntu-24.04 }
+          - { preset: x86_64-linux-musl,            os: ubuntu-24.04 }
+          - { preset: aarch64-linux-gnu,            os: ubuntu-24.04-arm }
+          - { preset: aarch64-linux-musl,           os: ubuntu-24.04-arm }
+          - { preset: x86_64-windows-gnu,           os: ubuntu-24.04 }
+          - { preset: aarch64-windows-gnu,          os: ubuntu-24.04 }
+          - { preset: x86-windows-gnu,              os: ubuntu-24.04 }
+          - { preset: x86_64-linux-gnu-vulkan,      os: ubuntu-24.04 }
+          - { preset: aarch64-linux-gnu-vulkan,     os: ubuntu-24.04-arm }
+          - { preset: x86_64-windows-gnu-vulkan,    os: ubuntu-24.04 }
+          - { preset: aarch64-windows-gnu-vulkan,   os: ubuntu-24.04 }
+          - { preset: x86_64-linux-gnu-vulkan-x11,  os: ubuntu-24.04 }
+          - { preset: aarch64-linux-gnu-vulkan-x11, os: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          # Not recursive. ANGLE has 79 submodules of its own - the gclient
+          # DEPS mirrored as gitlinks - and third_party/gles1_conform is on
+          # chrome-internal.googlesource.com, which no public runner can read.
+          # prepare-angle.sh fetches the five that are actually needed.
+          submodules: true
 
       - name: Install zig
         uses: mlugg/setup-zig@v2
@@ -51,25 +56,23 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build llvm python3-ply
+          echo "ANGLE_LLVM_TOOLS_DIR=$(llvm-config --bindir)" >> "$GITHUB_ENV"
 
       - name: Prepare the ANGLE checkout
-        run: tools/prepare-angle.sh
+        run: bash tools/prepare-angle.sh
 
       # The x11 presets need xcb and friends for the target, which zig does not
-      # bundle. Same mechanism as everywhere else: unpack the distribution's own
-      # packages into a sysroot, no root required.
+      # bundle. The runner architecture matches the target, so this takes the
+      # script's native path with no cross-architecture URL rewriting, and it
+      # needs no root - which is what lets it work on a hosted runner at all.
       - name: Build the target sysroot
         if: endsWith(matrix.preset, '-x11')
         run: |
-          arch=amd64
-          case "${{ matrix.preset }}" in aarch64-*) arch=arm64 ;; esac
-          tools/make-linux-sysroot.sh "$RUNNER_TEMP/sysroot" "$arch"
+          bash tools/make-linux-sysroot.sh "$RUNNER_TEMP/sysroot"
           echo "ZIG_SYSROOT=$RUNNER_TEMP/sysroot" >> "$GITHUB_ENV"
           echo "ZIG_GLIBC_VERSION=2.39" >> "$GITHUB_ENV"
 
       - name: Build and test
-        env:
-          ANGLE_LLVM_TOOLS_DIR: /usr/bin
         run: cmake --workflow --preset ${{ matrix.preset }}
 
       - uses: actions/upload-artifact@v4
@@ -79,9 +82,9 @@ jobs:
           if-no-files-found: error
 
   # Apple targets need an Apple SDK, which cannot be redistributed - so build
-  # them on a macOS runner, where Xcode's is already there. This also exercises
-  # the toolchain with a non-Windows host, which is the only configuration in
-  # which the Darwin install-name workaround is not needed.
+  # them on a macOS runner, where Xcode's is already there. This is also the
+  # only job whose host is neither Windows nor Linux, and the only one where
+  # the Darwin install-name workaround correctly does nothing.
   macos:
     name: ${{ matrix.preset }}
     runs-on: macos-14
@@ -94,7 +97,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: true
 
       - name: Install zig
         uses: mlugg/setup-zig@v2
@@ -105,21 +108,18 @@ jobs:
         run: |
           brew install ninja llvm
           python3 -m pip install --break-system-packages ply
-
-      - name: Prepare the ANGLE checkout
-        run: tools/prepare-angle.sh
-
-      - name: Build and test
-        env:
-          # Xcode's SDK, rather than a copy carried around. The toolchain only
-          # needs the root; it attaches the headers and frameworks itself.
-          ANGLE_MACOS_SDK: ${{ github.workspace }}/.sdk
-        run: |
-          ln -s "$(xcrun --show-sdk-path)" .sdk
+          # Xcode's SDK, rather than a copy carried around; the toolchain only
+          # needs the root and attaches headers and frameworks itself.
+          echo "ANGLE_MACOS_SDK=$(xcrun --show-sdk-path)" >> "$GITHUB_ENV"
           # Xcode ships nm, not llvm-nm, which is the name the export checks
           # look for; brew's llvm has it.
-          export ANGLE_LLVM_TOOLS_DIR="$(brew --prefix llvm)/bin"
-          cmake --workflow --preset ${{ matrix.preset }}
+          echo "ANGLE_LLVM_TOOLS_DIR=$(brew --prefix llvm)/bin" >> "$GITHUB_ENV"
+
+      - name: Prepare the ANGLE checkout
+        run: bash tools/prepare-angle.sh
+
+      - name: Build and test
+        run: cmake --workflow --preset ${{ matrix.preset }}
 
       - uses: actions/upload-artifact@v4
         with:
@@ -127,16 +127,27 @@ jobs:
           path: dist/${{ matrix.preset }}
           if-no-files-found: error
 
-  # The Windows binaries are built above but nothing there can run them. Take
-  # the artifact and execute the smoke test on a real Windows machine.
+  # The Windows binaries are built on Linux and nothing there can run them.
+  # Take the artifacts and execute the smoke test on real Windows, on both
+  # architectures.
   windows-run:
-    name: run x86_64-windows-gnu
+    name: run ${{ matrix.preset }}
     needs: cross
-    runs-on: windows-2022
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { preset: x86_64-windows-gnu,         os: windows-2022 }
+          - { preset: x86_64-windows-gnu-vulkan,  os: windows-2022 }
+          # x86 runs on an x64 runner under WoW64.
+          - { preset: x86-windows-gnu,            os: windows-2022 }
+          - { preset: aarch64-windows-gnu,        os: windows-11-arm }
+          - { preset: aarch64-windows-gnu-vulkan, os: windows-11-arm }
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: x86_64-windows-gnu
+          name: ${{ matrix.preset }}
           path: dist
       - name: Run the smoke test
         shell: cmd

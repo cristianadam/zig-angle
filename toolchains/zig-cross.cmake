@@ -3,7 +3,7 @@
 # Each toolchains/<triple>.cmake sets ZIG_TARGET and includes this file, which
 # locates the zig-cross checkout and hands off to its zig-toolchain.cmake.
 #
-#   -DZIG_CROSS_DIR=<path>    zig-cross checkout (default C:/Projects/github/zig-cross)
+#   -DZIG_CROSS_DIR=<path>    zig-cross checkout (default: the third_party submodule)
 #   -DZIG_EXECUTABLE=<path>   use this zig instead of whatever is on PATH
 #   -DANGLE_MACOS_SDK=<path>  macOS SDK, required for the Metal backend
 #   -DZIG_SYSROOT=<path>      extra target headers/libraries: <root>/include, <root>/lib
@@ -23,7 +23,13 @@ foreach (_var ZIG_CROSS_DIR ZIG_EXECUTABLE ANGLE_MACOS_SDK ZIG_SYSROOT)
 endforeach ()
 
 if (NOT ZIG_CROSS_DIR)
-    set(ZIG_CROSS_DIR "C:/Projects/github/zig-cross")
+    # Carried as a submodule, so an ordinary clone needs nothing set. The
+    # fallback is the path this was first developed against.
+    if (EXISTS "${CMAKE_CURRENT_LIST_DIR}/../third_party/zig-cross/cmake/zig-toolchain.cmake")
+        set(ZIG_CROSS_DIR "${CMAKE_CURRENT_LIST_DIR}/../third_party/zig-cross")
+    else ()
+        set(ZIG_CROSS_DIR "C:/Projects/github/zig-cross")
+    endif ()
 endif ()
 
 if (NOT EXISTS "${ZIG_CROSS_DIR}/cmake/zig-toolchain.cmake")

@@ -5,3 +5,6 @@
 	# CMake source lists into this working tree on purpose, so it is always
 	# "dirty" and saying so on every git status is only noise.
 	ignore = dirty
+[submodule "third_party/zig-cross"]
+	path = third_party/zig-cross
+	url = https://github.com/mrexodia/zig-cross.git
