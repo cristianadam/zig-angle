@@ -121,6 +121,27 @@ foreach (_lang C CXX OBJC OBJCXX)
     endforeach ()
 endforeach ()
 
+# zig's set of mingw import libraries is a subset of real mingw-w64's, and
+# projects link the missing ones by plain name. Generate them and put them on
+# the link path. (ANGLE itself sidesteps this by naming the API-set library
+# directly; a third-party project cannot be asked to do that.)
+if (ZIG_OS STREQUAL "windows")
+    if (ZIG_EXECUTABLE)
+        set(ZIG_EXECUTABLE_RESOLVED "${ZIG_EXECUTABLE}")
+    else ()
+        set(ZIG_EXECUTABLE_RESOLVED "zig")
+    endif ()
+    include("${CMAKE_CURRENT_LIST_DIR}/../cmake/ZigMingwImportLibs.cmake")
+    if (ZIG_MINGW_IMPORT_LIB_DIR)
+        foreach (_kind EXE SHARED MODULE)
+            if (NOT CMAKE_${_kind}_LINKER_FLAGS_INIT MATCHES "implib-${ZIG_ARCH}")
+                string(APPEND CMAKE_${_kind}_LINKER_FLAGS_INIT
+                       " \"-L${ZIG_MINGW_IMPORT_LIB_DIR}\"")
+            endif ()
+        endforeach ()
+    endif ()
+endif ()
+
 # Apple frameworks are not bundled with zig, so anything past the shader
 # translator needs a real macOS SDK (copy MacOSX.sdk over from a Mac). The SDK
 # is validated here; the flags that attach it are applied by the project, in

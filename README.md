@@ -558,6 +558,33 @@ is specifically `-Xclang -emit-pch` together with `-c`; `-x c++-header` alone
 is fine. The toolchain sets `CMAKE_DISABLE_PRECOMPILE_HEADERS`; set
 `ZIG_ALLOW_PRECOMPILE_HEADERS` to undo that if a later zig fixes it.
 
+**Some mingw import libraries are missing.** zig synthesises Windows import
+libraries from the `.def` files it vendors under `lib/libc/mingw`, and that set
+is a subset of real mingw-w64's. Two of the missing ones get linked by plain
+name in ordinary projects:
+
+```
+error: unable to find dynamic system library 'synchronization'
+error: unable to find dynamic system library 'runtimeobject'
+```
+
+qtbase links both. `synchronization` it links deliberately *before* `kernel32`,
+because the same symbols appear in some kernel32 import libraries and resolving
+them there makes the process load the wrong DLL at runtime.
+
+Both DLLs are pure forwarders, so a correct import library can be generated
+from a `.def` - and zig can do it itself, since it ships a drop-in `lib.exe`:
+
+```sh
+zig lib /def:synchronization.def /machine:arm64 /out:libsynchronization.a
+```
+
+`cmake/ZigMingwImportLibs.cmake` does that at configure time for Windows
+targets and puts the result on the link path, so nothing external is needed.
+ANGLE's own build sidesteps the issue differently, by naming the API-set
+library `api-ms-win-core-synch-l1-2-0` directly; a third-party project cannot
+be asked to do that.
+
 **Some glibc feature macros are exposed below the version that provides the
 function.** zig ships a single copy of recent glibc headers and gates the
 *declarations* by version, but not every *macro*. `bits/unistd_ext.h` is the
