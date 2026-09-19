@@ -4,15 +4,22 @@
 # lib/libc/mingw. That set is a subset of real mingw-w64's, and two of the
 # missing ones are linked unconditionally by ordinary projects:
 #
-#   synchronization.dll  WaitOnAddress / WakeByAddress*  (qtbase links this, and
-#                        deliberately before kernel32 - the same symbols appear
-#                        in some kernel32 import libraries, and resolving them
-#                        there makes the process load the wrong DLL at runtime)
-#   runtimeobject.dll    the WinRT Ro*/Windows* string APIs
+#   -lsynchronization  WaitOnAddress / WakeByAddress*  (qtbase links this, and
+#                      deliberately before kernel32 - the same symbols appear in
+#                      some kernel32 import libraries, and resolving them there
+#                      makes the process load the wrong DLL at runtime)
+#   -lruntimeobject    the WinRT Ro*/Windows* string APIs
 #
-# Both are plain forwarders, so a correct import library can be generated from a
-# .def. zig ships a drop-in lib.exe that does it, which keeps this free of any
-# dependency on an external LLVM.
+# The library *file* name is what -l matches, but the DLL named inside the .def
+# is what the loader goes looking for at run time, and those are not the same
+# thing here. There is no synchronization.dll or runtimeobject.dll on Windows -
+# MSVC's import libraries of those names are umbrellas over an API set and over
+# combase. Naming the .def after the link-time library instead produces a
+# binary that links perfectly and then dies at startup with
+# STATUS_DLL_NOT_FOUND, so each entry below carries its real DLL.
+#
+# zig ships a drop-in lib.exe that builds an import library from a .def, which
+# keeps this free of any dependency on an external LLVM.
 #
 # Included from toolchains/zig-cross.cmake for Windows targets; sets
 # ZIG_MINGW_IMPORT_LIB_DIR.
@@ -33,9 +40,13 @@ endif ()
 set(ZIG_MINGW_IMPORT_LIB_DIR
     "${CMAKE_CURRENT_LIST_DIR}/../.zig-bin/implib-${ZIG_ARCH}")
 
-# synchronization.dll exports exactly these three.
+# Resolved by the loader through the API set, as MSVC's synchronization.lib
+# does; the functions live in kernelbase.
+set(_zig_implib_synchronization_dll "api-ms-win-core-synch-l1-2-0.dll")
 set(_zig_implib_synchronization_exports
     WaitOnAddress WakeByAddressAll WakeByAddressSingle)
+
+set(_zig_implib_runtimeobject_dll "combase.dll")
 
 set(_zig_implib_runtimeobject_exports
     RoActivateInstance RoGetActivationFactory RoGetApartmentIdentifier
@@ -61,7 +72,8 @@ foreach (_lib synchronization runtimeobject)
     file(MAKE_DIRECTORY "${ZIG_MINGW_IMPORT_LIB_DIR}")
     set(_def "${ZIG_MINGW_IMPORT_LIB_DIR}/${_lib}.def")
     list(JOIN _zig_implib_${_lib}_exports "\n" _exports)
-    file(WRITE "${_def}" "LIBRARY ${_lib}.dll\nEXPORTS\n${_exports}\n")
+    file(WRITE "${_def}"
+         "LIBRARY ${_zig_implib_${_lib}_dll}\nEXPORTS\n${_exports}\n")
 
     execute_process(
         COMMAND "${ZIG_EXECUTABLE_RESOLVED}" lib
