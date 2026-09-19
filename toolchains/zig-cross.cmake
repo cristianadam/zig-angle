@@ -180,6 +180,14 @@ if (ZIG_OS STREQUAL "macos" AND ANGLE_MACOS_SDK)
         endif ()
     endforeach ()
 
+    # Two of CMake's Darwin link rules need rewriting - -bundle, which zig cc
+    # does not implement, and the install name, which a Windows host mangles.
+    # See the file for both, and for why they cannot be done here.
+    if (NOT CMAKE_USER_MAKE_RULES_OVERRIDE)
+        set(CMAKE_USER_MAKE_RULES_OVERRIDE
+            "${CMAKE_CURRENT_LIST_DIR}/zig-darwin-rules.cmake")
+    endif ()
+
     # zig's bundled Apple math.h asks for a partial <float.h> and poisons
     # libc++'s guard, so FLT_MAX goes missing later in the translation unit.
     # See cmake/AngleMacosSdk.cmake for the full story.

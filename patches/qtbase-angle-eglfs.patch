@@ -75,6 +75,38 @@ index 3218c669b95..06d98d502a7 100644
  )
  qt_feature("eglfs_brcm" PRIVATE
      LABEL "EGLFS Raspberry Pi"
+diff --git a/src/gui/opengl/qopengl.h b/src/gui/opengl/qopengl.h
+index 182f6f44279..1d7861f258c 100644
+--- a/src/gui/opengl/qopengl.h
++++ b/src/gui/opengl/qopengl.h
+@@ -55,7 +55,10 @@
+ */
+ typedef void* GLeglImageOES;
+ 
+-# elif !defined(Q_OS_DARWIN) // "uncontrolled" ES2 platforms
++# elif !defined(Q_OS_DARWIN) || defined(Q_OS_MACOS) // "uncontrolled" ES2 platforms
++// macOS has no system OpenGL ES, so an ES build there is necessarily using a
++// third-party implementation such as ANGLE, which ships the Khronos headers.
++// Without this it matches neither branch and no GL header is included at all.
+ 
+ // In "es2" builds (QT_CONFIG(opengles2)) additional defines indicate GLES 3.0 or
+ // higher is available *at build time*. In this case include the corresponding
+diff --git a/src/plugins/platforms/CMakeLists.txt b/src/plugins/platforms/CMakeLists.txt
+index dd7b28d87b1..534c2784391 100644
+--- a/src/plugins/platforms/CMakeLists.txt
++++ b/src/plugins/platforms/CMakeLists.txt
+@@ -16,7 +16,10 @@ endif()
+ if(UIKIT AND NOT WATCHOS)
+     add_subdirectory(ios)
+ endif()
+-if(MACOS)
++# The cocoa plugin's GL integration is NSOpenGL/CGL, which is desktop GL only -
++# in an OpenGL ES build qcocoaglcontext.mm cannot compile, and there is nothing
++# for the plugin to render with anyway. eglfs is the QPA for ES on macOS.
++if(MACOS AND NOT QT_FEATURE_opengles2)
+     add_subdirectory(cocoa)
+ endif()
+ if(WIN32)
 diff --git a/src/plugins/platforms/eglfs/CMakeLists.txt b/src/plugins/platforms/eglfs/CMakeLists.txt
 index 2e8cfe6ab25..76b70137d02 100644
 --- a/src/plugins/platforms/eglfs/CMakeLists.txt
@@ -275,29 +307,35 @@ index 220863b731f..fe63e22b216 100644
  
  bool QEglFSDeviceIntegration::hasCapability(QPlatformIntegration::Capability cap) const
 diff --git a/src/plugins/platforms/eglfs/api/qeglfsintegration.cpp b/src/plugins/platforms/eglfs/api/qeglfsintegration.cpp
-index a7a1d243987..2d1c76d4a47 100644
+index a7a1d243987..87312652481 100644
 --- a/src/plugins/platforms/eglfs/api/qeglfsintegration.cpp
 +++ b/src/plugins/platforms/eglfs/api/qeglfsintegration.cpp
-@@ -32,9 +32,14 @@
+@@ -32,9 +32,20 @@
  # include <QtGui/private/qeglpbuffer_p.h>
  #endif
  
-+#if defined(Q_OS_UNIX)
++// QtGui builds the generic Unix font database and theme for UNIX AND NOT APPLE,
++// but the generic Unix event dispatcher for all of UNIX - so macOS wants the
++// portable font database with the Unix dispatcher, and the conditions differ.
++#if defined(Q_OS_UNIX) && !defined(Q_OS_DARWIN)
  #include <QtGui/private/qgenericunixfontdatabase_p.h>
  #include <QtGui/private/qgenericunixtheme_p.h>
- #include <QtGui/private/qgenericunixeventdispatcher_p.h>
 +#else
 +#include <QtGui/private/qfreetypefontdatabase_p.h>
++#endif
++#if defined(Q_OS_UNIX)
+ #include <QtGui/private/qgenericunixeventdispatcher_p.h>
++#else
 +#include <QtGui/private/qwindowsguieventdispatcher_p.h>
 +#endif
  #include <QtFbSupport/private/qfbvthandler_p.h>
  #ifndef QT_NO_OPENGL
  # include <QtOpenGL/private/qopenglcompositorbackingstore_p.h>
-@@ -77,7 +82,11 @@ using namespace Qt::StringLiterals;
+@@ -77,7 +88,11 @@ using namespace Qt::StringLiterals;
  QEglFSIntegration::QEglFSIntegration()
      : m_display(EGL_NO_DISPLAY),
        m_inputContext(nullptr),
-+#if defined(Q_OS_UNIX)
++#if defined(Q_OS_UNIX) && !defined(Q_OS_DARWIN)
        m_fontDb(new QGenericUnixFontDatabase),
 +#else
 +      m_fontDb(new QFreeTypeFontDatabase),
@@ -305,7 +343,7 @@ index a7a1d243987..2d1c76d4a47 100644
        m_disableInputHandlers(false)
  {
      m_disableInputHandlers = qEnvironmentVariableIntValue("QT_QPA_EGLFS_DISABLE_INPUT");
-@@ -127,7 +136,11 @@ void QEglFSIntegration::destroy()
+@@ -127,7 +142,11 @@ void QEglFSIntegration::destroy()
  
  QAbstractEventDispatcher *QEglFSIntegration::createEventDispatcher() const
  {
@@ -317,11 +355,11 @@ index a7a1d243987..2d1c76d4a47 100644
  }
  
  QPlatformServices *QEglFSIntegration::services() const
-@@ -145,7 +158,12 @@ QPlatformFontDatabase *QEglFSIntegration::fontDatabase() const
+@@ -145,7 +164,12 @@ QPlatformFontDatabase *QEglFSIntegration::fontDatabase() const
  
  QPlatformTheme *QEglFSIntegration::createPlatformTheme(const QString &name) const
  {
-+#if defined(Q_OS_UNIX)
++#if defined(Q_OS_UNIX) && !defined(Q_OS_DARWIN)
      return QGenericUnixTheme::createUnixTheme(name);
 +#else
 +    Q_UNUSED(name);
@@ -332,10 +370,10 @@ index a7a1d243987..2d1c76d4a47 100644
  QPlatformBackingStore *QEglFSIntegration::createPlatformBackingStore(QWindow *window) const
 diff --git a/src/plugins/platforms/eglfs/api/qeglfsnativewindow_mac.mm b/src/plugins/platforms/eglfs/api/qeglfsnativewindow_mac.mm
 new file mode 100644
-index 00000000000..b1ae588f3cf
+index 00000000000..56635aba296
 --- /dev/null
 +++ b/src/plugins/platforms/eglfs/api/qeglfsnativewindow_mac.mm
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,34 @@
 +// Copyright (C) 2026 The Qt Company Ltd.
 +// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
 +
@@ -345,6 +383,7 @@ index 00000000000..b1ae588f3cf
 +
 +#include "qeglfsnativewindow_mac_p.h"
 +
++#import <Foundation/Foundation.h>
 +#import <QuartzCore/CALayer.h>
 +
 +QT_BEGIN_NAMESPACE
@@ -355,16 +394,17 @@ index 00000000000..b1ae588f3cf
 +    layer.frame = CGRectMake(0, 0, width > 0 ? width : 1, height > 0 ? height : 1);
 +    // No implicit animations: the layer is a render target, not part of a view
 +    // hierarchy being laid out.
-+    layer.actions = @{@"contents": [NSNull null], @"bounds": [NSNull null]};
-+    return (__bridge_retained void *)layer;
++    layer.actions = @{ @"contents": [NSNull null], @"bounds": [NSNull null] };
++    // qtbase is built without ARC, so -alloc already hands over the reference
++    // the caller keeps; a __bridge_retained cast here would be a no-op.
++    return (void *)layer;
 +}
 +
 +void qt_eglfsDestroyLayer(void *nativeWindow)
 +{
 +    if (!nativeWindow)
 +        return;
-+    CALayer *layer = (__bridge_transfer CALayer *)nativeWindow;
-+    (void)layer;
++    [(CALayer *)nativeWindow release];
 +}
 +
 +QT_END_NAMESPACE
@@ -403,15 +443,16 @@ index 00000000000..4ad8cfd21f8
 +
 +#endif // QEGLFSNATIVEWINDOW_MAC_P_H
 diff --git a/src/plugins/platforms/minimalegl/qminimaleglintegration.cpp b/src/plugins/platforms/minimalegl/qminimaleglintegration.cpp
-index 7e8ccb86def..96dfd215413 100644
+index 7e8ccb86def..2fa7b268486 100644
 --- a/src/plugins/platforms/minimalegl/qminimaleglintegration.cpp
 +++ b/src/plugins/platforms/minimalegl/qminimaleglintegration.cpp
-@@ -8,7 +8,11 @@
+@@ -8,7 +8,12 @@
  #ifndef QT_NO_OPENGL
  # include "qminimaleglbackingstore.h"
  #endif
 -#include <QtGui/private/qgenericunixfontdatabase_p.h>
-+#if defined(Q_OS_UNIX)
++// QtGui builds the generic Unix font database for UNIX AND NOT APPLE only.
++#if defined(Q_OS_UNIX) && !defined(Q_OS_DARWIN)
 +#  include <QtGui/private/qgenericunixfontdatabase_p.h>
 +#else
 +#  include <QtGui/private/qfreetypefontdatabase_p.h>
@@ -419,11 +460,11 @@ index 7e8ccb86def..96dfd215413 100644
  
  #if defined(Q_OS_UNIX)
  #  include <QtGui/private/qgenericunixeventdispatcher_p.h>
-@@ -28,7 +32,11 @@
+@@ -28,7 +33,11 @@
  QT_BEGIN_NAMESPACE
  
  QMinimalEglIntegration::QMinimalEglIntegration()
-+#if defined(Q_OS_UNIX)
++#if defined(Q_OS_UNIX) && !defined(Q_OS_DARWIN)
      : mFontDb(new QGenericUnixFontDatabase()), mScreen(new QMinimalEglScreen(EGL_DEFAULT_DISPLAY))
 +#else
 +    : mFontDb(new QFreeTypeFontDatabase()), mScreen(new QMinimalEglScreen(EGL_DEFAULT_DISPLAY))

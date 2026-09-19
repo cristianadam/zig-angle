@@ -377,10 +377,10 @@ existing ones.
   from MSL embedded in `mtl_internal_shaders_src_autogen.h`, so Apple's `metal`
   compiler is never invoked — but an SDK is still required, see below.
 
-### Qt cannot be cross-built for macOS
+### Cross-building Qt for macOS
 
-Not a zig or ANGLE limitation - Qt's build system assumes it is running on a
-Mac. `qt_build_internals_set_up_private_api`, on the critical path of every
+Qt's build system assumes it is running on a Mac.
+`qt_build_internals_set_up_private_api`, on the critical path of every
 Apple-targeted configure, calls out to `xcrun`:
 
 ```
@@ -391,21 +391,19 @@ CMake Error at cmake/QtPublicAppleHelpers.cmake:901:
 It only asks three questions (`--show-sdk-path`, `--show-sdk-version`,
 `xcodebuild -version`), so a stub binary gets past it - `find_program` on
 Windows only considers `.exe`/`.com`, and priming `-DQT_XCRUN=` is easier
-still. Qt then configures cleanly as `macx-clang (arm64)` with Metal.
+still. Qt then configures as `macx-clang (arm64)`.
 
-It does not get much further. Qt puts the SDK on the include path as
-`-I<sdk>/usr/include`, ahead of libc++, and the build dies in exactly the way
-the note above predicts:
+Past that it needs, in addition to the patch below:
 
-```
-<cctype> tried including <ctype.h> but didn't find libc++'s <ctype.h> header.
-```
+| Flag | Why |
+| ---- | --- |
+| `-DINPUT_opengl=es2` | otherwise the SDK's OpenGL.framework satisfies desktop GL, and `opengles2` - which requires `NOT QT_FEATURE_opengl_desktop` - loses the condition |
+| `-DFEATURE_framework=OFF` | a framework's binary has no file extension and zig cc refuses to link one, with `unrecognized file extension`. Plain dylibs are fine |
+| `-DFEATURE_system_*=OFF`, `-DFEATURE_{cups,gssapi,icu,dbus,backtrace}=OFF` | the SDK is headers and stub libraries, not a package manager |
 
-Which is worth chasing only if the payoff were Qt on ANGLE - and it is not.
-Just as on Windows, `opengles2` requires `NOT QT_FEATURE_opengl_desktop`, and
-the SDK's OpenGL.framework satisfies desktop GL, so ANGLE loses the condition.
-The cocoa plugin has only `qcocoaglcontext.mm` (NSOpenGLContext) and no EGL
-context class at all. Qt on macOS renders with desktop GL or Metal.
+What comes out is a Qt that renders through ANGLE rather than through Metal or
+desktop GL, which is the point of the exercise - see *Getting Qt to use ANGLE
+on Windows and macOS* below.
 
 ### WebAssembly is not one of the targets
 
@@ -481,7 +479,7 @@ exclusions and fills in what is missing behind them. Against qtbase dev
 cd <qtbase> && git apply <zig-angle>/patches/qtbase-angle-eglfs.patch
 ```
 
-It is 227 lines over 11 files, and most of it is small:
+It is 244 added lines over 13 files, and most of it is small:
 
 | Change | Why |
 | ------ | --- |
@@ -489,23 +487,42 @@ It is 227 lines over 11 files, and most of it is small:
 | `qunixnativeinterface.cpp` built when `UNIX OR QT_FEATURE_egl` | `QEGLContext`'s native interface is *declared* under `QT_CONFIG(egl)` but only *defined* in that Unix-only file, so enabling EGL elsewhere left an undefined symbol. The file is `QT_CONFIG`-guarded throughout, so off Unix only the EGL block survives. |
 | eglfs device integration: HWND / CALayer | eglfs owns its native window, and only knew how to make one on Linux. Windows gets a `WS_POPUP`; Apple a `CALayer`, which is what ANGLE's Metal backend checks for. |
 | eglfs screen metrics on Windows | the `q_*FromFb` helpers are `#ifdef Q_OS_UNIX`; GDI answers the same questions. |
-| eglfs + minimalegl font database, event dispatcher, theme | `QGenericUnixFontDatabase` is the fontconfig-aware subclass of the portable `QFreeTypeFontDatabase`. minimalegl already handled Windows for the dispatcher. |
+| eglfs + minimalegl font database, event dispatcher, theme | `QGenericUnixFontDatabase` is the fontconfig-aware subclass of the portable `QFreeTypeFontDatabase`. minimalegl already handled Windows for the dispatcher. Three conditions rather than one: QtGui builds the generic Unix font database and theme for `UNIX AND NOT APPLE`, but the generic Unix event dispatcher for all of `UNIX`, so macOS wants the portable font database *with* the Unix dispatcher. |
+| `qopengl.h` includes the Khronos ES headers on macOS | see below. |
+| cocoa not built in an ES build | its GL integration is `NSOpenGLContext`/CGL, desktop GL only, so `qcocoaglcontext.mm` cannot compile against ES headers - and there would be nothing for the plugin to render with. eglfs is the QPA for ES on macOS. |
 | two GL profile bits in `qwindowsglcontext.cpp` | the WGL backend needs `GL_CONTEXT_CORE_PROFILE_BIT` to talk to `wglCreateContextAttribsARB`, and the ES headers do not define it. |
 | `FindGLESv2.cmake` picks the header it found | see below. |
 
-Two of these look like genuine upstream bugs rather than missing features.
-`QEGLContext` being declared everywhere and defined only on Unix is one. The
-other is `FindGLESv2.cmake`, whose compile test reads
+Three of these look like genuine upstream bugs rather than missing features.
+`QEGLContext` being declared everywhere and defined only on Unix is one.
+
+The second is in `qopengl.h`, which in an ES build reads
+
+```c
+#if QT_CONFIG(opengles2)
+# if defined(Q_OS_IOS) || defined(Q_OS_TVOS)
+#   include <OpenGLES/ES3/gl.h>
+# elif !defined(Q_OS_DARWIN)      // "uncontrolled" ES2 platforms
+#   include <GLES2/gl2.h>
+```
+
+macOS is Darwin but neither iOS nor tvOS, so it matches *neither* branch and no
+GL header is included at all; `qopenglcontext.h` then fails on `unknown type
+name 'GLuint'` long before anything ANGLE-specific is reached. macOS has no
+system OpenGL ES, so an ES build there is by definition a third-party
+implementation shipping the Khronos headers - the patch lets macOS into that
+branch.
+
+The third is `FindGLESv2.cmake`, whose compile test reads
 
 ```cmake
 #ifdef __APPLE__
 #  include <OpenGLES/ES2/gl.h>
 ```
 
-That is the iOS system framework, but `qopengl.h` reaches for those headers
-only under `Q_OS_IOS || Q_OS_TVOS` and expects the Khronos ones on macOS. So
-Qt's detection disagrees with Qt's own code, and any third-party OpenGL ES on
-macOS fails the test even when its library and headers were both found.
+That is the iOS system framework. Detection therefore looks for a header no ES
+implementation on macOS installs, and fails with the library and the headers
+both sitting there found. The patch tests whichever of the two it located.
 
 **Windows is verified end to end** - a Qt application cross-compiled here runs
 on the machine's Adreno GPU:
@@ -522,11 +539,20 @@ emulator integration, is the only device integration plugin built and eglfs
 prefers it over the base one. Making the base integration the default on
 Windows is a loose end.
 
-**macOS is compiled, not run.** Nothing here can execute a macOS binary, so
-the `CALayer` path in particular has never been exercised - treat it as a
-starting point rather than a finished port. Building it at all also needs the
-stubbed `xcrun` and the bundled-libraries flags described under *Qt cannot be
-cross-built for macOS*.
+**macOS is built and linked, not run.** qtbase cross-compiles for
+`aarch64-macos-none`, and a Qt application links against it into an arm64
+`MH_EXECUTE` that resolves Qt and ANGLE through `@rpath`:
+
+```
+rpath  <build>/lib
+dep    @rpath/libQt6Gui.6.dylib
+dep    @rpath/libGLESv2.dylib
+dep    @rpath/libEGL.dylib
+```
+
+Nothing here can execute a macOS binary though, so the `CALayer` path in
+particular has never run - treat it as a starting point rather than a finished
+port. Building it also needs the flags under *Cross-building Qt for macOS*.
 
 ### Vulkan, from an upstream ANGLE checkout
 
@@ -740,6 +766,30 @@ ANGLE's own build sidesteps the issue differently, by naming the API-set
 library `api-ms-win-core-synch-l1-2-0` directly; a third-party project cannot
 be asked to do that.
 
+**`-bundle` is not implemented.** CMake links a `MODULE` library on Darwin
+with `-bundle`; zig cc reports `argument unused during compilation: '-bundle'`
+and links an executable instead, so the first plugin in a build fails with
+`undefined symbol: _main`. A dylib is `dlopen()`-able on macOS exactly like a
+bundle and plugin loaders do not care which they get, so
+`toolchains/zig-darwin-rules.cmake` links `MODULE` libraries with `-shared`.
+
+That file is a `CMAKE_USER_MAKE_RULES_OVERRIDE` rather than part of the
+toolchain because `Platform/Darwin.cmake` sets these variables unconditionally
+and runs *after* the toolchain file; `CMake<LANG>Information.cmake` includes
+the override after that, which is the first point at which a new value sticks.
+
+**Not zig, but next door: install names pick up a Windows separator.** The
+Darwin link rules spell the install name
+`<SONAME_FLAG> <TARGET_INSTALLNAME_DIR><TARGET_SONAME>`, and CMake produces
+`TARGET_INSTALLNAME_DIR` by running `@rpath/` through shell conversion - which
+on a Windows host rewrites the separator. Every dylib then identifies itself as
+`@rpath\libFoo.dylib`, and a backslash being an ordinary character in a Mach-O
+path, nothing linked against it would ever load. `TARGET_SONAME` is a bare
+filename and is not converted, so the same rules override folds `@rpath/` into
+the soname flag and drops `TARGET_INSTALLNAME_DIR`. The cost is that a custom
+`INSTALL_NAME_DIR` stops having an effect - which on this host it could not
+have had anyway, there being no `install_name_tool`.
+
 **Some glibc feature macros are exposed below the version that provides the
 function.** zig ships a single copy of recent glibc headers and gates the
 *declarations* by version, but not every *macro*. `bits/unistd_ext.h` is the
@@ -782,6 +832,7 @@ cmake/AngleVerify.cmake      script-mode export/linkage checks, run by CTest
 cmake/AngleInstall.cmake     headers, pkg-config and the CMake package
 cmake/ANGLEConfig.cmake.in   template for find_package(ANGLE)
 toolchains/zig-cross.cmake   shared toolchain shim over zig-cross
+toolchains/zig-darwin-rules.cmake  Darwin link-rule fixes: -bundle, install names
 toolchains/<triple>.cmake    two lines each: set(ZIG_TARGET …) + include
 tests/angle_smoke.cpp        consumer test: WebGL-style context, draw, readback
 tests/CMakeLists.txt         registers the CTest tests, picks a runner

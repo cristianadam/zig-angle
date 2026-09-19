@@ -390,19 +390,6 @@ target_compile_definitions(EGL PRIVATE
 target_link_libraries(EGL PRIVATE GLESv2 ${CMAKE_DL_LIBS})
 set_target_properties(EGL PROPERTIES LINKER_LANGUAGE CXX)
 
-if (is_apple)
-    # CMAKE_INSTALL_NAME_DIR is not usable when cross-compiling to Darwin from
-    # Windows: CMake runs the directory through ConvertToOutputPath, so
-    # "@rpath" reaches the linker as "@rpath\" and the recorded install name
-    # becomes "@rpath\libGLESv2.dylib", which no dyld will ever resolve. Turn
-    # CMake's -install_name off and write it out here instead.
-    foreach (_t IN ITEMS GLESv2 EGL)
-        set_property(TARGET ${_t} PROPERTY NO_SONAME ON)
-        target_link_options(${_t} PRIVATE
-            "-Wl,-install_name,@rpath/$<TARGET_FILE_NAME:${_t}>")
-    endforeach ()
-endif ()
-
 if (is_win)
     # The .def files name the exports and pin the output basename.
     target_sources(GLESv2 PRIVATE "${ANGLE_SOURCE_DIR}/src/libGLESv2/libGLESv2_autogen.def")
