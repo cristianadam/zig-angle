@@ -275,6 +275,31 @@ own `vkkhrdisplay` platform plugin wants. Be aware that a driver can advertise
 `VK_KHR_display` and still report no displays - llvmpipe does exactly that, so
 neither `simple` mode nor `vkkhrdisplay` is testable under WSL.
 
+#### Qt's own Vulkan support
+
+Separate from ANGLE, and worth knowing about because the pieces are already
+here. Qt's `vkkhrdisplay` platform plugin renders with Vulkan directly, so it
+does not involve ANGLE at all - it refuses OpenGL outright:
+
+```
+vkkhrdisplay platform plugin only supports QWindow with surfaceType == VulkanSurface
+```
+
+`QT_FEATURE_vulkan` needs only **headers**; `WrapVulkanHeaders` does not look
+for a library, because `QVulkanInstance` loads libvulkan at runtime. The
+vulkan-headers already fetched for ANGLE's Vulkan backend serve:
+
+```sh
+cmake <qt build> -DVulkan_INCLUDE_DIR=<angle>/third_party/vulkan-headers/src/include                  -DFEATURE_vulkan=ON
+```
+
+The second flag matters. Qt pins the user-facing `FEATURE_*` entries in the
+cache, so a tree first configured without the headers keeps `FEATURE_vulkan`
+`OFF` even once they appear, and the computed condition never gets a look in.
+Configuring fresh avoids it. Either way `libqvkkhrdisplay.so` then builds, and
+Qt's Vulkan works - `QVulkanInstance::create()`, 24 extensions, llvmpipe
+enumerated - the plugin just cannot find a display to scan out to.
+
 Also worth stating: Qt wants far more from a sysroot than GL - fontconfig,
 xkbcommon, the platform integration of your choice - none of which this project
 provides. The configuration above disables what it can and uses Qt's bundled
