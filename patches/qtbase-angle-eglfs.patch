@@ -1,0 +1,454 @@
+diff --git a/cmake/FindGLESv2.cmake b/cmake/FindGLESv2.cmake
+index b28d8a14c16..2bc2b82f0c9 100644
+--- a/cmake/FindGLESv2.cmake
++++ b/cmake/FindGLESv2.cmake
+@@ -25,13 +25,19 @@ else()
+     if(TARGET PlatformGraphics::PlatformGraphics)
+         platform_graphics_extend_check_cxx_source_required_variables()
+     endif()
++    # Pick the header that was actually found rather than assuming every Apple
++    # platform means the system OpenGLES framework. A third-party OpenGL ES on
++    # macOS - ANGLE, say - ships the Khronos GLES2/gl2.h, which is also what
++    # qopengl.h expects there: it reaches for OpenGLES/ES*/gl.h only on iOS and
++    # tvOS.
++    if(EXISTS "${GLESv2_INCLUDE_DIR}/GLES2/gl2.h")
++        set(_qt_gles2_include "#define GL_GLEXT_PROTOTYPES
++#include <GLES2/gl2.h>")
++    else()
++        set(_qt_gles2_include "#include <OpenGLES/ES2/gl.h>")
++    endif()
+     check_cxx_source_compiles("
+-#ifdef __APPLE__
+-#  include <OpenGLES/ES2/gl.h>
+-#else
+-#  define GL_GLEXT_PROTOTYPES
+-#  include <GLES2/gl2.h>
+-#endif
++${_qt_gles2_include}
+ 
+ int main(int, char **) {
+     glUniform1f(1, GLfloat(1.0));
+diff --git a/src/corelib/thread/qthread_win.cpp b/src/corelib/thread/qthread_win.cpp
+index faec4e64140..13682f22618 100644
+--- a/src/corelib/thread/qthread_win.cpp
++++ b/src/corelib/thread/qthread_win.cpp
+@@ -12,6 +12,7 @@
+ #include "qmutex.h"
+ #include <private/quniquehandle_types_p.h>
+ #include <private/qwin32ticks_p.h>
++#include <QtCore/qspan.h>
+ 
+ #include <qt_windows.h>
+ 
+diff --git a/src/gui/CMakeLists.txt b/src/gui/CMakeLists.txt
+index e9ab738c65c..a13668f794c 100644
+--- a/src/gui/CMakeLists.txt
++++ b/src/gui/CMakeLists.txt
+@@ -1087,7 +1087,7 @@ qt_internal_extend_target(Gui CONDITION WASM
+         platform/wasm/qwasmlocalfileaccess.cpp platform/wasm/qwasmlocalfileaccess_p.h
+ )
+ 
+-qt_internal_extend_target(Gui CONDITION UNIX
++qt_internal_extend_target(Gui CONDITION UNIX OR QT_FEATURE_egl
+     SOURCES
+         platform/unix/qunixnativeinterface.cpp
+ )
+diff --git a/src/gui/configure.cmake b/src/gui/configure.cmake
+index 3218c669b95..06d98d502a7 100644
+--- a/src/gui/configure.cmake
++++ b/src/gui/configure.cmake
+@@ -1062,7 +1062,7 @@ qt_feature("mtdev" PRIVATE
+ )
+ qt_feature("opengles2" PUBLIC
+     LABEL "OpenGL ES 2.0"
+-    CONDITION NOT WIN32 AND NOT WATCHOS AND NOT QT_FEATURE_opengl_desktop AND GLESv2_FOUND
++    CONDITION NOT WATCHOS AND NOT QT_FEATURE_opengl_desktop AND GLESv2_FOUND
+     ENABLE INPUT_opengl STREQUAL 'es2'
+     DISABLE INPUT_opengl STREQUAL 'desktop' OR INPUT_opengl STREQUAL 'dynamic' OR INPUT_opengl STREQUAL 'no'
+ )
+@@ -1135,7 +1135,7 @@ qt_feature("egl_x11" PRIVATE
+ qt_feature("eglfs" PRIVATE
+     SECTION "Platform plugins"
+     LABEL "EGLFS"
+-    CONDITION NOT ANDROID AND NOT APPLE AND NOT WIN32 AND NOT WASM AND NOT QNX AND QT_FEATURE_egl
++    CONDITION NOT ANDROID AND NOT WASM AND NOT QNX AND QT_FEATURE_egl
+ )
+ qt_feature("eglfs_brcm" PRIVATE
+     LABEL "EGLFS Raspberry Pi"
+diff --git a/src/plugins/platforms/eglfs/CMakeLists.txt b/src/plugins/platforms/eglfs/CMakeLists.txt
+index 2e8cfe6ab25..76b70137d02 100644
+--- a/src/plugins/platforms/eglfs/CMakeLists.txt
++++ b/src/plugins/platforms/eglfs/CMakeLists.txt
+@@ -56,6 +56,13 @@ qt_internal_extend_target(EglFSDeviceIntegrationPrivate CONDITION TARGET Qt::Inp
+         Qt::InputSupportPrivate
+ )
+ 
++qt_internal_extend_target(EglFSDeviceIntegrationPrivate CONDITION MACOS
++    SOURCES
++        api/qeglfsnativewindow_mac.mm api/qeglfsnativewindow_mac_p.h
++    LIBRARIES
++        ${FWQuartzCore}
++)
++
+ qt_internal_extend_target(EglFSDeviceIntegrationPrivate
+     CONDITION TARGET PlatformGraphics::PlatformGraphics
+     PUBLIC_LIBRARIES
+diff --git a/src/plugins/platforms/eglfs/api/qeglfsdeviceintegration.cpp b/src/plugins/platforms/eglfs/api/qeglfsdeviceintegration.cpp
+index 220863b731f..fe63e22b216 100644
+--- a/src/plugins/platforms/eglfs/api/qeglfsdeviceintegration.cpp
++++ b/src/plugins/platforms/eglfs/api/qeglfsdeviceintegration.cpp
+@@ -22,6 +22,14 @@
+ #endif
+ #include <QLoggingCategory>
+ 
++#if defined(Q_OS_WIN)
++#include <qt_windows.h>
++#endif
++
++#if defined(Q_OS_MACOS)
++#include "qeglfsnativewindow_mac_p.h"
++#endif
++
+ #if defined(Q_OS_LINUX)
+ #include <fcntl.h>
+ #include <unistd.h>
+@@ -34,7 +42,10 @@
+ #endif
+ 
+ #include <private/qfactoryloader_p.h>
++#if defined(Q_OS_LINUX) || defined(Q_OS_VXWORKS)
++// Only for qt_safe_open() on the framebuffer below.
+ #include <private/qcore_unix_p.h>
++#endif
+ 
+ QT_BEGIN_NAMESPACE
+ 
+@@ -155,12 +166,34 @@ void QEglFSDeviceIntegration::screenDestroy()
+ 
+ QSizeF QEglFSDeviceIntegration::physicalScreenSize() const
+ {
++#if defined(Q_OS_UNIX)
+     return q_physicalScreenSizeFromFb(framebuffer, screenSize());
++#elif defined(Q_OS_WIN)
++    if (HDC dc = GetDC(nullptr)) {
++        const QSizeF mm(GetDeviceCaps(dc, HORZSIZE), GetDeviceCaps(dc, VERTSIZE));
++        ReleaseDC(nullptr, dc);
++        if (!mm.isEmpty())
++            return mm;
++    }
++    return QSizeF();
++#else
++    return QSizeF();
++#endif
+ }
+ 
+ QSize QEglFSDeviceIntegration::screenSize() const
+ {
++#if defined(Q_OS_WIN)
++    // No framebuffer device to interrogate; the desktop is the screen.
++    const QSize desktop(GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
++    if (!desktop.isEmpty())
++        return desktop;
++    return QSize(800, 600);
++#elif defined(Q_OS_UNIX)
+     return q_screenSizeFromFb(framebuffer);
++#else
++    return QSize(800, 600);
++#endif
+ }
+ 
+ QDpi QEglFSDeviceIntegration::logicalDpi() const
+@@ -185,7 +218,19 @@ Qt::ScreenOrientation QEglFSDeviceIntegration::orientation() const
+ 
+ int QEglFSDeviceIntegration::screenDepth() const
+ {
++#if defined(Q_OS_UNIX)
+     return q_screenDepthFromFb(framebuffer);
++#elif defined(Q_OS_WIN)
++    if (HDC dc = GetDC(nullptr)) {
++        const int depth = GetDeviceCaps(dc, BITSPIXEL) * GetDeviceCaps(dc, PLANES);
++        ReleaseDC(nullptr, dc);
++        if (depth > 0)
++            return depth;
++    }
++    return 32;
++#else
++    return 32;
++#endif
+ }
+ 
+ QImage::Format QEglFSDeviceIntegration::screenFormat() const
+@@ -195,7 +240,19 @@ QImage::Format QEglFSDeviceIntegration::screenFormat() const
+ 
+ qreal QEglFSDeviceIntegration::refreshRate() const
+ {
++#if defined(Q_OS_UNIX)
+     return q_refreshRateFromFb(framebuffer);
++#elif defined(Q_OS_WIN)
++    if (HDC dc = GetDC(nullptr)) {
++        const int hz = GetDeviceCaps(dc, VREFRESH);
++        ReleaseDC(nullptr, dc);
++        if (hz > 1)
++            return hz;
++    }
++    return 60;
++#else
++    return 60;
++#endif
+ }
+ 
+ EGLint QEglFSDeviceIntegration::surfaceType() const
+@@ -227,6 +284,38 @@ QEglFSWindow *QEglFSDeviceIntegration::createWindow(QWindow *window) const
+     return new QEglFSWindow(window);
+ }
+ 
++#if defined(Q_OS_WIN)
++// eglfs has no window system to ask, so it owns the native window outright.
++// ANGLE takes an HWND as its EGLNativeWindowType, and a plain popup with
++// CS_OWNDC is all a single-surface-per-window platform needs.
++static const wchar_t *qt_eglfsWindowClass()
++{
++    static const wchar_t name[] = L"QtEglFSWindow";
++    static bool registered = false;
++    if (!registered) {
++        WNDCLASS wc = {};
++        wc.style = CS_OWNDC;
++        wc.lpfnWndProc = DefWindowProc;
++        wc.hInstance = GetModuleHandle(nullptr);
++        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
++        wc.lpszClassName = name;
++        RegisterClass(&wc);
++        registered = true;
++    }
++    return name;
++}
++
++static HWND qt_eglfsCreateWindow(const QSize &size, bool visible)
++{
++    const int w = size.width() > 0 ? size.width() : 1;
++    const int h = size.height() > 0 ? size.height() : 1;
++    return CreateWindowEx(0, qt_eglfsWindowClass(), L"Qt",
++                          WS_POPUP | (visible ? WS_VISIBLE : 0),
++                          0, 0, w, h,
++                          nullptr, nullptr, GetModuleHandle(nullptr), nullptr);
++}
++#endif // Q_OS_WIN
++
+ EGLNativeWindowType QEglFSDeviceIntegration::createNativeWindow(QPlatformWindow *platformWindow,
+                                                     const QSize &size,
+                                                     const QSurfaceFormat &format)
+@@ -234,18 +323,36 @@ EGLNativeWindowType QEglFSDeviceIntegration::createNativeWindow(QPlatformWindow
+     Q_UNUSED(platformWindow);
+     Q_UNUSED(size);
+     Q_UNUSED(format);
++#if defined(Q_OS_WIN)
++    return EGLNativeWindowType(qt_eglfsCreateWindow(size, true));
++#elif defined(Q_OS_MACOS)
++    return EGLNativeWindowType(qt_eglfsCreateLayer(size.width(), size.height()));
++#else
+     return 0;
++#endif
+ }
+ 
+ EGLNativeWindowType QEglFSDeviceIntegration::createNativeOffscreenWindow(const QSurfaceFormat &format)
+ {
+     Q_UNUSED(format);
++#if defined(Q_OS_WIN)
++    return EGLNativeWindowType(qt_eglfsCreateWindow(QSize(1, 1), false));
++#elif defined(Q_OS_MACOS)
++    return EGLNativeWindowType(qt_eglfsCreateLayer(1, 1));
++#else
+     return 0;
++#endif
+ }
+ 
+ void QEglFSDeviceIntegration::destroyNativeWindow(EGLNativeWindowType window)
+ {
+     Q_UNUSED(window);
++#if defined(Q_OS_WIN)
++    if (window)
++        DestroyWindow(HWND(window));
++#elif defined(Q_OS_MACOS)
++    qt_eglfsDestroyLayer(window);
++#endif
+ }
+ 
+ bool QEglFSDeviceIntegration::hasCapability(QPlatformIntegration::Capability cap) const
+diff --git a/src/plugins/platforms/eglfs/api/qeglfsintegration.cpp b/src/plugins/platforms/eglfs/api/qeglfsintegration.cpp
+index a7a1d243987..2d1c76d4a47 100644
+--- a/src/plugins/platforms/eglfs/api/qeglfsintegration.cpp
++++ b/src/plugins/platforms/eglfs/api/qeglfsintegration.cpp
+@@ -32,9 +32,14 @@
+ # include <QtGui/private/qeglpbuffer_p.h>
+ #endif
+ 
++#if defined(Q_OS_UNIX)
+ #include <QtGui/private/qgenericunixfontdatabase_p.h>
+ #include <QtGui/private/qgenericunixtheme_p.h>
+ #include <QtGui/private/qgenericunixeventdispatcher_p.h>
++#else
++#include <QtGui/private/qfreetypefontdatabase_p.h>
++#include <QtGui/private/qwindowsguieventdispatcher_p.h>
++#endif
+ #include <QtFbSupport/private/qfbvthandler_p.h>
+ #ifndef QT_NO_OPENGL
+ # include <QtOpenGL/private/qopenglcompositorbackingstore_p.h>
+@@ -77,7 +82,11 @@ using namespace Qt::StringLiterals;
+ QEglFSIntegration::QEglFSIntegration()
+     : m_display(EGL_NO_DISPLAY),
+       m_inputContext(nullptr),
++#if defined(Q_OS_UNIX)
+       m_fontDb(new QGenericUnixFontDatabase),
++#else
++      m_fontDb(new QFreeTypeFontDatabase),
++#endif
+       m_disableInputHandlers(false)
+ {
+     m_disableInputHandlers = qEnvironmentVariableIntValue("QT_QPA_EGLFS_DISABLE_INPUT");
+@@ -127,7 +136,11 @@ void QEglFSIntegration::destroy()
+ 
+ QAbstractEventDispatcher *QEglFSIntegration::createEventDispatcher() const
+ {
++#if defined(Q_OS_UNIX)
+     return createUnixEventDispatcher();
++#else
++    return new QWindowsGuiEventDispatcher;
++#endif
+ }
+ 
+ QPlatformServices *QEglFSIntegration::services() const
+@@ -145,7 +158,12 @@ QPlatformFontDatabase *QEglFSIntegration::fontDatabase() const
+ 
+ QPlatformTheme *QEglFSIntegration::createPlatformTheme(const QString &name) const
+ {
++#if defined(Q_OS_UNIX)
+     return QGenericUnixTheme::createUnixTheme(name);
++#else
++    Q_UNUSED(name);
++    return nullptr;  // Qt falls back to its default QPlatformTheme.
++#endif
+ }
+ 
+ QPlatformBackingStore *QEglFSIntegration::createPlatformBackingStore(QWindow *window) const
+diff --git a/src/plugins/platforms/eglfs/api/qeglfsnativewindow_mac.mm b/src/plugins/platforms/eglfs/api/qeglfsnativewindow_mac.mm
+new file mode 100644
+index 00000000000..b1ae588f3cf
+--- /dev/null
++++ b/src/plugins/platforms/eglfs/api/qeglfsnativewindow_mac.mm
+@@ -0,0 +1,32 @@
++// Copyright (C) 2026 The Qt Company Ltd.
++// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
++
++// eglfs owns its native window outright, having no window system to ask. On
++// Apple that means a CALayer: ANGLE's Metal backend takes EGLNativeWindowType
++// as a void* and checks it with -isKindOfClass:[CALayer class].
++
++#include "qeglfsnativewindow_mac_p.h"
++
++#import <QuartzCore/CALayer.h>
++
++QT_BEGIN_NAMESPACE
++
++void *qt_eglfsCreateLayer(int width, int height)
++{
++    CALayer *layer = [[CALayer alloc] init];
++    layer.frame = CGRectMake(0, 0, width > 0 ? width : 1, height > 0 ? height : 1);
++    // No implicit animations: the layer is a render target, not part of a view
++    // hierarchy being laid out.
++    layer.actions = @{@"contents": [NSNull null], @"bounds": [NSNull null]};
++    return (__bridge_retained void *)layer;
++}
++
++void qt_eglfsDestroyLayer(void *nativeWindow)
++{
++    if (!nativeWindow)
++        return;
++    CALayer *layer = (__bridge_transfer CALayer *)nativeWindow;
++    (void)layer;
++}
++
++QT_END_NAMESPACE
+diff --git a/src/plugins/platforms/eglfs/api/qeglfsnativewindow_mac_p.h b/src/plugins/platforms/eglfs/api/qeglfsnativewindow_mac_p.h
+new file mode 100644
+index 00000000000..4ad8cfd21f8
+--- /dev/null
++++ b/src/plugins/platforms/eglfs/api/qeglfsnativewindow_mac_p.h
+@@ -0,0 +1,28 @@
++// Copyright (C) 2026 The Qt Company Ltd.
++// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
++
++#ifndef QEGLFSNATIVEWINDOW_MAC_P_H
++#define QEGLFSNATIVEWINDOW_MAC_P_H
++
++//
++//  W A R N I N G
++//  -------------
++//
++// This file is not part of the Qt API. It exists purely as an
++// implementation detail. This header file may change from version to
++// version without notice, or even be removed.
++//
++// We mean it.
++//
++
++#include "qeglfsglobal_p.h"
++
++QT_BEGIN_NAMESPACE
++
++// Returns a retained CALayer as a void*, suitable for EGLNativeWindowType.
++void *qt_eglfsCreateLayer(int width, int height);
++void qt_eglfsDestroyLayer(void *nativeWindow);
++
++QT_END_NAMESPACE
++
++#endif // QEGLFSNATIVEWINDOW_MAC_P_H
+diff --git a/src/plugins/platforms/minimalegl/qminimaleglintegration.cpp b/src/plugins/platforms/minimalegl/qminimaleglintegration.cpp
+index 7e8ccb86def..96dfd215413 100644
+--- a/src/plugins/platforms/minimalegl/qminimaleglintegration.cpp
++++ b/src/plugins/platforms/minimalegl/qminimaleglintegration.cpp
+@@ -8,7 +8,11 @@
+ #ifndef QT_NO_OPENGL
+ # include "qminimaleglbackingstore.h"
+ #endif
+-#include <QtGui/private/qgenericunixfontdatabase_p.h>
++#if defined(Q_OS_UNIX)
++#  include <QtGui/private/qgenericunixfontdatabase_p.h>
++#else
++#  include <QtGui/private/qfreetypefontdatabase_p.h>
++#endif
+ 
+ #if defined(Q_OS_UNIX)
+ #  include <QtGui/private/qgenericunixeventdispatcher_p.h>
+@@ -28,7 +32,11 @@
+ QT_BEGIN_NAMESPACE
+ 
+ QMinimalEglIntegration::QMinimalEglIntegration()
++#if defined(Q_OS_UNIX)
+     : mFontDb(new QGenericUnixFontDatabase()), mScreen(new QMinimalEglScreen(EGL_DEFAULT_DISPLAY))
++#else
++    : mFontDb(new QFreeTypeFontDatabase()), mScreen(new QMinimalEglScreen(EGL_DEFAULT_DISPLAY))
++#endif
+ {
+     QWindowSystemInterface::handleScreenAdded(mScreen);
+ 
+diff --git a/src/plugins/platforms/windows/qwindowsglcontext.cpp b/src/plugins/platforms/windows/qwindowsglcontext.cpp
+index 885b2e22e46..d04fe765738 100644
+--- a/src/plugins/platforms/windows/qwindowsglcontext.cpp
++++ b/src/plugins/platforms/windows/qwindowsglcontext.cpp
+@@ -114,6 +114,16 @@
+ #define WGL_FRAMEBUFFER_SRGB_CAPABLE_EXT 0x20A9
+ #endif
+ 
++// These profile bits come from desktop <GL/gl.h>. An OpenGL ES build gets the
++// Khronos ES headers instead, which do not define them, but the WGL backend
++// still needs the values to talk to wglCreateContextAttribsARB.
++#ifndef GL_CONTEXT_CORE_PROFILE_BIT
++#  define GL_CONTEXT_CORE_PROFILE_BIT 0x00000001
++#endif
++#ifndef GL_CONTEXT_COMPATIBILITY_PROFILE_BIT
++#  define GL_CONTEXT_COMPATIBILITY_PROFILE_BIT 0x00000002
++#endif
++
+ QT_BEGIN_NAMESPACE
+ 
+ QWindowsOpengl32DLL QOpenGLStaticContext::opengl32;

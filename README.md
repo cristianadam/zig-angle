@@ -469,6 +469,65 @@ beautifully for Zig code calling imported functions, and is strictly further
 from what a large C++ codebase like ANGLE needs than the wasi target that
 already fails above.
 
+### Getting Qt to use ANGLE on Windows and macOS
+
+Out of the box it will not: `qt_feature("opengles2")` is excluded on WIN32, and
+`qt_feature("eglfs")` on both WIN32 and APPLE, so Qt finds ANGLE and then
+declines to use it. `patches/qtbase-angle-eglfs.patch` removes those
+exclusions and fills in what is missing behind them. Against qtbase dev
+(6.13.0):
+
+```sh
+cd <qtbase> && git apply <zig-angle>/patches/qtbase-angle-eglfs.patch
+```
+
+It is 227 lines over 11 files, and most of it is small:
+
+| Change | Why |
+| ------ | --- |
+| `opengles2`, `eglfs` feature conditions | drop `NOT WIN32` / `NOT APPLE` |
+| `qunixnativeinterface.cpp` built when `UNIX OR QT_FEATURE_egl` | `QEGLContext`'s native interface is *declared* under `QT_CONFIG(egl)` but only *defined* in that Unix-only file, so enabling EGL elsewhere left an undefined symbol. The file is `QT_CONFIG`-guarded throughout, so off Unix only the EGL block survives. |
+| eglfs device integration: HWND / CALayer | eglfs owns its native window, and only knew how to make one on Linux. Windows gets a `WS_POPUP`; Apple a `CALayer`, which is what ANGLE's Metal backend checks for. |
+| eglfs screen metrics on Windows | the `q_*FromFb` helpers are `#ifdef Q_OS_UNIX`; GDI answers the same questions. |
+| eglfs + minimalegl font database, event dispatcher, theme | `QGenericUnixFontDatabase` is the fontconfig-aware subclass of the portable `QFreeTypeFontDatabase`. minimalegl already handled Windows for the dispatcher. |
+| two GL profile bits in `qwindowsglcontext.cpp` | the WGL backend needs `GL_CONTEXT_CORE_PROFILE_BIT` to talk to `wglCreateContextAttribsARB`, and the ES headers do not define it. |
+| `FindGLESv2.cmake` picks the header it found | see below. |
+
+Two of these look like genuine upstream bugs rather than missing features.
+`QEGLContext` being declared everywhere and defined only on Unix is one. The
+other is `FindGLESv2.cmake`, whose compile test reads
+
+```cmake
+#ifdef __APPLE__
+#  include <OpenGLES/ES2/gl.h>
+```
+
+That is the iOS system framework, but `qopengl.h` reaches for those headers
+only under `Q_OS_IOS || Q_OS_TVOS` and expects the Khronos ones on macOS. So
+Qt's detection disagrees with Qt's own code, and any third-party OpenGL ES on
+macOS fails the test even when its library and headers were both found.
+
+**Windows is verified end to end** - a Qt application cross-compiled here runs
+on the machine's Adreno GPU:
+
+```
+$ QT_QPA_PLATFORM=eglfs QT_QPA_EGLFS_INTEGRATION=none ./qtglwin.exe
+GL_RENDERER: ANGLE (Qualcomm, Adreno(TM) X1-85 GPU, Direct3D11 vs_5_0 ps_5_0, D3D11-31.0.160.0)
+GL_VERSION : OpenGL ES 3.0 (ANGLE 2.1.28778)
+qtgl: PASS
+```
+
+`QT_QPA_EGLFS_INTEGRATION=none` is needed because `eglfs_emu`, the Android
+emulator integration, is the only device integration plugin built and eglfs
+prefers it over the base one. Making the base integration the default on
+Windows is a loose end.
+
+**macOS is compiled, not run.** Nothing here can execute a macOS binary, so
+the `CALayer` path in particular has never been exercised - treat it as a
+starting point rather than a finished port. Building it at all also needs the
+stubbed `xcrun` and the bundled-libraries flags described under *Qt cannot be
+cross-built for macOS*.
+
 ### Vulkan, from an upstream ANGLE checkout
 
 WebKit's copy cannot build the Vulkan backend: there is no `Vulkan.cmake` source
@@ -727,7 +786,8 @@ toolchains/<triple>.cmake    two lines each: set(ZIG_TARGET …) + include
 tests/angle_smoke.cpp        consumer test: WebGL-style context, draw, readback
 tests/CMakeLists.txt         registers the CTest tests, picks a runner
 CMakePresets.json            one configure/build/test/workflow preset per triple
-tools/gni-to-cmake.patch     three fixes to WebKit's GN-to-CMake converter
+tools/gni-to-cmake.patch     two fixes to WebKit's GN-to-CMake converter
+patches/qtbase-angle-eglfs.patch  makes Qt able to use ANGLE on Windows/macOS
 ```
 
 `cmake/AngleSources.cmake` includes `Compiler.cmake`, `GLESv2.cmake`,
