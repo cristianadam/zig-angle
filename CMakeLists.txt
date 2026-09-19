@@ -97,6 +97,7 @@ elseif (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     set(ANGLE_ENABLE_D3D9 OFF)
 else ()
     option(ANGLE_ENABLE_OPENGL "Build the desktop GL backend (EGL via dlopen)" ON)
+    option(ANGLE_USE_X11 "Build the Vulkan XCB display, for window surfaces on X11" OFF)
     set(ANGLE_ENABLE_D3D11 OFF)
     set(ANGLE_ENABLE_D3D9 OFF)
     set(ANGLE_ENABLE_METAL OFF)
@@ -203,9 +204,18 @@ if (is_win)
 elseif (is_linux)
     list(APPEND ANGLE_DEFINITIONS
         ANGLE_PLATFORM_LINUX
-        EGL_NO_PLATFORM_SPECIFIC_TYPES
         USE_SYSTEM_EGL
     )
+    # EGL_NO_PLATFORM_SPECIFIC_TYPES makes every native type in eglplatform.h a
+    # void*, which is what a build with no windowing system wants. The XCB
+    # display is a windowing system: it casts EGLNativeWindowType to an
+    # xcb_window_t, and void* will not narrow. Leaving the define off selects
+    # the header's plain __unix__ branch - khronos_uintptr_t, no X11 headers
+    # pulled in - which is also what a consumer compiling against the installed
+    # headers has been seeing all along, since nothing tells it to define this.
+    if (NOT ANGLE_USE_X11)
+        list(APPEND ANGLE_DEFINITIONS EGL_NO_PLATFORM_SPECIFIC_TYPES)
+    endif ()
     list(APPEND ANGLE_EXTRA_SOURCE_LISTS
         libangle_gpu_info_util_sources
         libangle_gpu_info_util_linux_sources
@@ -288,6 +298,35 @@ if (ANGLE_ENABLE_VULKAN)
         elseif (NOT ANGLE_VULKAN_DISPLAY_MODE STREQUAL "offscreen")
             message(FATAL_ERROR
                 "zig-angle: ANGLE_VULKAN_DISPLAY_MODE must be offscreen, headless or simple")
+        endif ()
+
+        # None of those modes can turn an X11 window into a surface, so a
+        # toolkit asking for one - Qt's xcb plugin, say - gets a display that
+        # then fails at eglCreateWindowSurface. DisplayVkXcb is the backend
+        # that can, through VK_KHR_xcb_surface, and it needs xcb's headers,
+        # which zig does not bundle; point ZIG_SYSROOT at a sysroot that has
+        # them. DisplayVkXcb calls xcb_connect() itself from $DISPLAY and takes
+        # the xcb window id as EGLNativeWindowType, so libxcb is the only
+        # dependency this adds.
+        if (ANGLE_USE_X11)
+            if (ANGLE_ENABLE_OPENGL)
+                message(FATAL_ERROR
+                    "zig-angle: ANGLE_USE_X11 also puts the GL backend on GLX, "
+                    "and GLX wants EGL's X11 native types - Display*, Window, "
+                    "Pixmap - which would change the ABI of the headers this "
+                    "installs. Vulkan's XCB display needs none of that. Build "
+                    "the X11 variant with -DANGLE_ENABLE_OPENGL=OFF.")
+            endif ()
+            list(APPEND ANGLE_DEFINITIONS ANGLE_USE_X11 VK_USE_PLATFORM_XCB_KHR)
+            find_library(ANGLE_XCB_LIBRARY NAMES xcb)
+            find_path(ANGLE_XCB_INCLUDE_DIR NAMES xcb/xcb.h)
+            if (NOT ANGLE_XCB_LIBRARY OR NOT ANGLE_XCB_INCLUDE_DIR)
+                message(FATAL_ERROR
+                    "zig-angle: ANGLE_USE_X11 needs xcb. Neither xcb/xcb.h nor "
+                    "libxcb was found - pass -DZIG_SYSROOT=<root> with a "
+                    "sysroot that provides them.")
+            endif ()
+            list(APPEND ANGLE_PLATFORM_LIBRARIES "${ANGLE_XCB_LIBRARY}")
         endif ()
     endif ()
     # vulkan_icd.cpp wants a path for the mock ICD manifest even though nothing

@@ -28,6 +28,43 @@ index b28d8a14c16..2bc2b82f0c9 100644
  
  int main(int, char **) {
      glUniform1f(1, GLfloat(1.0));
+diff --git a/cmake/FindXKB_COMMON_X11.cmake b/cmake/FindXKB_COMMON_X11.cmake
+index a00acb3cb01..8e2851e7230 100644
+--- a/cmake/FindXKB_COMMON_X11.cmake
++++ b/cmake/FindXKB_COMMON_X11.cmake
+@@ -5,6 +5,32 @@ find_package(PkgConfig QUIET)
+ 
+ pkg_check_modules(XKB_COMMON_X11 IMPORTED_TARGET "xkbcommon-x11>=0.4.1")
+ 
++if (NOT TARGET PkgConfig::XKB_COMMON_X11)
++    # Without pkg-config - cross-building from a host that has none, say - this
++    # module found nothing at all, while cmake/3rdparty/kwin/FindXKB.cmake
++    # treats pkg-config as a source of hints and looks the library up itself.
++    # So plain xkbcommon is found, xkbcommon-x11 is not, and the xcb plugin is
++    # disabled with both sitting there on disk. Do what the sibling does.
++    find_path(XKB_COMMON_X11_INCLUDE_DIR
++        NAMES xkbcommon/xkbcommon-x11.h
++        HINTS ${XKB_COMMON_X11_INCLUDE_DIRS}
++    )
++    find_library(XKB_COMMON_X11_LIBRARY
++        NAMES xkbcommon-x11
++        HINTS ${XKB_COMMON_X11_LIBRARY_DIRS}
++    )
++    mark_as_advanced(XKB_COMMON_X11_INCLUDE_DIR XKB_COMMON_X11_LIBRARY)
++
++    if (XKB_COMMON_X11_INCLUDE_DIR AND XKB_COMMON_X11_LIBRARY)
++        add_library(PkgConfig::XKB_COMMON_X11 UNKNOWN IMPORTED)
++        set_target_properties(PkgConfig::XKB_COMMON_X11 PROPERTIES
++            IMPORTED_LOCATION "${XKB_COMMON_X11_LIBRARY}"
++            INTERFACE_INCLUDE_DIRECTORIES "${XKB_COMMON_X11_INCLUDE_DIR}")
++    endif()
++endif()
++
+ if (NOT TARGET PkgConfig::XKB_COMMON_X11)
+     set(XKB_COMMON_X11_FOUND 0)
++else()
++    set(XKB_COMMON_X11_FOUND 1)
+ endif()
 diff --git a/src/corelib/thread/qthread_win.cpp b/src/corelib/thread/qthread_win.cpp
 index faec4e64140..13682f22618 100644
 --- a/src/corelib/thread/qthread_win.cpp

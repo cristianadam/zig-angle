@@ -77,6 +77,15 @@
       }
     },
     {
+      "name": "x11-base",
+      "hidden": true,
+      "description": "Vulkan window surfaces on X11. Needs xcb headers and libraries: pass -DZIG_SYSROOT=<root>. The GL backend is off because GLX would want EGL's X11 native types.",
+      "cacheVariables": {
+        "ANGLE_USE_X11": "ON",
+        "ANGLE_ENABLE_OPENGL": "OFF"
+      }
+    },
+    {
       "name": "x86_64-linux-gnu-vulkan",
       "inherits": [
         "x86_64-linux-gnu",
@@ -86,12 +95,32 @@
       "toolchainFile": "${sourceDir}/toolchains/x86_64-linux-gnu.cmake"
     },
     {
+      "name": "x86_64-linux-gnu-vulkan-x11",
+      "inherits": [
+        "x86_64-linux-gnu",
+        "vulkan-base",
+        "x11-base"
+      ],
+      "displayName": "Linux x86_64 (glibc) + Vulkan + X11",
+      "toolchainFile": "${sourceDir}/toolchains/x86_64-linux-gnu.cmake"
+    },
+    {
       "name": "aarch64-linux-gnu-vulkan",
       "inherits": [
         "aarch64-linux-gnu",
         "vulkan-base"
       ],
       "displayName": "Linux arm64 (glibc) + Vulkan",
+      "toolchainFile": "${sourceDir}/toolchains/aarch64-linux-gnu.cmake"
+    },
+    {
+      "name": "aarch64-linux-gnu-vulkan-x11",
+      "inherits": [
+        "aarch64-linux-gnu",
+        "vulkan-base",
+        "x11-base"
+      ],
+      "displayName": "Linux arm64 (glibc) + Vulkan + X11",
       "toolchainFile": "${sourceDir}/toolchains/aarch64-linux-gnu.cmake"
     },
     {
@@ -182,8 +211,16 @@
       "configurePreset": "x86_64-linux-gnu-vulkan"
     },
     {
+      "name": "x86_64-linux-gnu-vulkan-x11",
+      "configurePreset": "x86_64-linux-gnu-vulkan-x11"
+    },
+    {
       "name": "aarch64-linux-gnu-vulkan",
       "configurePreset": "aarch64-linux-gnu-vulkan"
+    },
+    {
+      "name": "aarch64-linux-gnu-vulkan-x11",
+      "configurePreset": "aarch64-linux-gnu-vulkan-x11"
     },
     {
       "name": "x86_64-linux-musl-vulkan",
@@ -276,8 +313,22 @@
       ]
     },
     {
+      "name": "x86_64-linux-gnu-vulkan-x11-install",
+      "configurePreset": "x86_64-linux-gnu-vulkan-x11",
+      "targets": [
+        "install"
+      ]
+    },
+    {
       "name": "aarch64-linux-gnu-vulkan-install",
       "configurePreset": "aarch64-linux-gnu-vulkan",
+      "targets": [
+        "install"
+      ]
+    },
+    {
+      "name": "aarch64-linux-gnu-vulkan-x11-install",
+      "configurePreset": "aarch64-linux-gnu-vulkan-x11",
       "targets": [
         "install"
       ]
@@ -380,9 +431,19 @@
       "configurePreset": "x86_64-linux-gnu-vulkan"
     },
     {
+      "name": "x86_64-linux-gnu-vulkan-x11",
+      "inherits": "test-base",
+      "configurePreset": "x86_64-linux-gnu-vulkan-x11"
+    },
+    {
       "name": "aarch64-linux-gnu-vulkan",
       "inherits": "test-base",
       "configurePreset": "aarch64-linux-gnu-vulkan"
+    },
+    {
+      "name": "aarch64-linux-gnu-vulkan-x11",
+      "inherits": "test-base",
+      "configurePreset": "aarch64-linux-gnu-vulkan-x11"
     },
     {
       "name": "x86_64-linux-musl-vulkan",
@@ -623,6 +684,27 @@
       ]
     },
     {
+      "name": "x86_64-linux-gnu-vulkan-x11",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "x86_64-linux-gnu-vulkan-x11"
+        },
+        {
+          "type": "build",
+          "name": "x86_64-linux-gnu-vulkan-x11"
+        },
+        {
+          "type": "test",
+          "name": "x86_64-linux-gnu-vulkan-x11"
+        },
+        {
+          "type": "build",
+          "name": "x86_64-linux-gnu-vulkan-x11-install"
+        }
+      ]
+    },
+    {
       "name": "aarch64-linux-gnu-vulkan",
       "steps": [
         {
@@ -640,6 +722,27 @@
         {
           "type": "build",
           "name": "aarch64-linux-gnu-vulkan-install"
+        }
+      ]
+    },
+    {
+      "name": "aarch64-linux-gnu-vulkan-x11",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "aarch64-linux-gnu-vulkan-x11"
+        },
+        {
+          "type": "build",
+          "name": "aarch64-linux-gnu-vulkan-x11"
+        },
+        {
+          "type": "test",
+          "name": "aarch64-linux-gnu-vulkan-x11"
+        },
+        {
+          "type": "build",
+          "name": "aarch64-linux-gnu-vulkan-x11-install"
         }
       ]
     },

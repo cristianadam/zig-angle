@@ -477,7 +477,7 @@ exclusions and fills in what is missing behind them. Against qtbase dev
 cd <qtbase> && git apply <zig-angle>/patches/qtbase-angle-eglfs.patch
 ```
 
-It is 666 added lines over 26 files, and most of it is small:
+It is 692 added lines over 27 files, and most of it is small:
 
 | Change | Why |
 | ------ | --- |
@@ -494,6 +494,7 @@ It is 666 added lines over 26 files, and most of it is small:
 | `opengl-dynamic` disabled by `INPUT_opengl=es2` | see below. |
 | `eglfs_emu` declines when the emulator is not there | see below. |
 | `FindGLESv2.cmake` picks the header it found | see below. |
+| `FindXKB_COMMON_X11.cmake` falls back to `find_library` | see below. |
 
 Three of these look like genuine upstream bugs rather than missing features.
 `QEGLContext` being declared everywhere and defined only on Unix is one.
@@ -525,6 +526,14 @@ The third is `FindGLESv2.cmake`, whose compile test reads
 That is the iOS system framework. Detection therefore looks for a header no ES
 implementation on macOS installs, and fails with the library and the headers
 both sitting there found. The patch tests whichever of the two it located.
+
+A fourth, of the same kind: `FindXKB_COMMON_X11.cmake` is nothing but a
+`pkg_check_modules` call, while `cmake/3rdparty/kwin/FindXKB.cmake` next door
+treats pkg-config as a source of hints and then looks the library up itself.
+Cross-building from a host with no pkg-config, plain xkbcommon is therefore
+found and xkbcommon-x11 is not - which disables the whole xcb plugin, with both
+libraries sitting on disk. The patch gives it the same fallback its sibling
+has.
 
 #### EGL in the `windows` plugin
 
@@ -638,6 +647,85 @@ eglfs's fabricated layer nor cocoa's content layer - has ever run. Treat the
 macOS side as a starting point rather than a finished port. Building it also
 needs the flags under *Cross-building Qt for macOS*.
 
+### Windowed Qt on Linux: a sysroot, and ANGLE's XCB display
+
+eglfs owns the whole screen. For ordinary decorated windows on Linux the
+answer is Qt's `xcb` plugin, which already has an EGL GL integration upstream -
+`xcb_glx_plugin` is even gated `NOT QT_FEATURE_opengles2`, so in an ES build
+EGL is the only integration it will build. Nothing needed writing. Two things
+needed supplying.
+
+**The headers and libraries.** zig bundles a libc, not a distribution. Qt's
+xcb plugin wants xcb, xkbcommon-x11, X11 and a dozen xcb-* components, and
+none of that exists in a zig cross build. They can be had without root and
+without touching the running system, because `apt-get download` needs neither
+and `dpkg -x` only unpacks:
+
+```sh
+# in WSL, or any Linux of the same distribution as the target
+tools/make-linux-sysroot.sh /mnt/c/Projects/sysroots/ubuntu-24.04-aarch64
+```
+
+That is `apt-get download` and `dpkg -x` and nothing else. Hand the result to
+the toolchain with `-DZIG_SYSROOT=<root>`, which adds `-isystem <root>/include`,
+`-L <root>/lib` and puts the root on `CMAKE_FIND_ROOT_PATH`. The script copies
+each library twice, as `libfoo.so` and as `libfoo.so.N`, because linking uses
+the first name and the loader asks for the second, and NTFS cannot hold the
+symlink Debian would use. It comes to about 13 MB.
+
+Pass a second argument to build a sysroot for another architecture
+(`make-linux-sysroot.sh <dest> amd64` from an arm64 machine): dpkg would need
+root to enable a foreign architecture, so it takes the URL apt would have used
+and rewrites it.
+
+The sysroot has to match the target: an aarch64 one will not link an x86_64
+build. Both were built here out of Ubuntu 24.04 packages, and the ABI they
+carry sets the floor - `libxcb-cursor.so` refers to `__isoc23_strtol@GLIBC_2.38`,
+so these builds want `-DZIG_GLIBC_VERSION=2.39` rather than the usual 2.34.
+
+**A display ANGLE can make window surfaces on.** With the three
+`ANGLE_VULKAN_DISPLAY_MODE` choices above, `eglCreateWindowSurface` on an X11
+window is meaningless, and Qt gets as far as creating the window and then
+crashes. `DisplayVkXcb` is the backend that can do it, through
+`VK_KHR_xcb_surface`, and `-DANGLE_USE_X11=ON` builds it. Presets
+`x86_64-linux-gnu-vulkan-x11` and `aarch64-linux-gnu-vulkan-x11` set it.
+
+Two things come with that switch, both deliberate:
+
+* **The GL backend goes off.** `angle_use_x11` means GLX to `GL.cmake` and
+  XCB surfaces to `Vulkan.cmake`, and GLX wants EGL's X11 native types -
+  `Display *`, `Window`, `Pixmap` - which would change the ABI of the headers
+  this installs. The preset builds Vulkan only, and the configure step says so
+  if you ask for both.
+* **`EGL_NO_PLATFORM_SPECIFIC_TYPES` goes off.** It makes every native type in
+  `eglplatform.h` a `void *`, which is right for a build with no window system
+  and wrong here: `DisplayVkXcb` casts `EGLNativeWindowType` to an
+  `xcb_window_t`, and a `void *` will not narrow. Without the define the header
+  takes its plain `__unix__` branch - `khronos_uintptr_t`, no X11 headers
+  pulled in - which is what a consumer compiling against the installed headers
+  has been seeing all along, nothing having told it to define this.
+
+**This one runs.** WSL here is Ubuntu 24.04 aarch64 with WSLg, so the target
+architecture and a display server are both to hand:
+
+```
+$ QT_QPA_PLATFORM=xcb ANGLE_DEFAULT_PLATFORM=vulkan ./qtglwindow
+platform  : "xcb"
+GL_RENDERER: ANGLE (Mesa, Vulkan 1.4.318 (llvmpipe (LLVM 20.1.2 128 bits)), llvmpipe-25.2.8)
+GL_VERSION : OpenGL ES 3.1 (ANGLE 2.1.1)
+centre pixel: 0 255 0 255
+qtglwindow: PASS
+```
+
+A real decorated `QWindow` with `QSurface::OpenGLSurface`, cleared and read
+back, through Qt's xcb plugin, EGL, ANGLE, `VK_KHR_xcb_surface` and Vulkan.
+
+Wayland would work the same way - it is EGL-native and ANGLE has
+`DisplayVkWayland` behind `angle_use_wayland` - but Qt's support for it lives
+in qtwayland, which is a second module to cross-build, and its protocol code
+is generated by a `wayland-scanner` that would have to run on the host. Not
+attempted.
+
 ### Vulkan, from an upstream ANGLE checkout
 
 WebKit's copy cannot build the Vulkan backend: there is no `Vulkan.cmake` source
@@ -650,6 +738,8 @@ $env:ANGLE_SOURCE_DIR = "C:\Projects\github\angle-upstream"
 cmake --workflow --preset aarch64-linux-gnu-vulkan
 ```
 
+The two glibc Linux triples also have a `-vulkan-x11` preset, which adds
+ANGLE's XCB display so window surfaces work on X11; it needs `ZIG_SYSROOT`.
 There is a `<triple>-vulkan` preset for every non-macOS triple, and
 `-DANGLE_ENABLE_VULKAN=ON` works on any triple including macOS — there is just
 no preset for it, because on macOS it is a strictly longer path to the same
@@ -953,6 +1043,7 @@ tests/angle_smoke.cpp        consumer test: WebGL-style context, draw, readback
 tests/CMakeLists.txt         registers the CTest tests, picks a runner
 CMakePresets.json            one configure/build/test/workflow preset per triple
 tools/gni-to-cmake.patch     two fixes to WebKit's GN-to-CMake converter
+tools/make-linux-sysroot.sh  builds the ZIG_SYSROOT tree from distribution packages
 patches/qtbase-angle-eglfs.patch  makes Qt able to use ANGLE on Windows/macOS
 ```
 
@@ -970,6 +1061,8 @@ WebKit's `WEBKIT_*` CMake machinery is required.
 | `ZIG_CROSS_DIR`             | zig-cross checkout (default `C:/Projects/github/zig-cross`)  |
 | `ANGLE_SOURCE_DIR`          | ANGLE checkout                                               |
 | `ANGLE_MACOS_SDK`           | macOS SDK root                                               |
+| `ZIG_SYSROOT`               | extra target headers/libraries: `<root>/include`, `<root>/lib` |
+| `ANGLE_USE_X11`             | build the Vulkan XCB display (window surfaces on X11)        |
 | `ZLIB_SOURCE_DIR`           | existing zlib source tree; skips the download                |
 | `ANGLE_ENABLE_D3D11`/`_D3D9`| Windows backends, both `ON`                                  |
 | `ANGLE_ENABLE_OPENGL`       | GL backend (WGL on Windows, EGL on Linux), `ON`              |

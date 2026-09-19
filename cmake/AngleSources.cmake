@@ -28,7 +28,13 @@ endif ()
 
 # --- Feature switches consumed by the generated lists ----------------------
 set(angle_is_winuwp FALSE)
-set(angle_use_x11 FALSE)                          # Linux uses the dlopen'd EGL backend
+# GL.cmake and Vulkan.cmake both branch on angle_use_x11, but they mean
+# different things by it: GLX for the GL backend, VK_KHR_xcb_surface for
+# Vulkan. GLX needs EGL's X11 native types - Display*, Window, Pixmap - which
+# come from defining USE_X11 and change the public EGL ABI. Vulkan's XCB
+# display does not: it takes the window id as an integer. So this stays off for
+# the GL list and is turned on again just before the Vulkan one.
+set(angle_use_x11 FALSE)
 set(angle_enable_cgl ${ANGLE_ENABLE_CGL})
 set(angle_enable_d3d9 ${ANGLE_ENABLE_D3D9})
 set(angle_enable_d3d11 ${ANGLE_ENABLE_D3D11})
@@ -61,7 +67,9 @@ if (is_win)
     include(${ANGLE_SOURCE_DIR}/D3D.cmake)
 endif ()
 if (ANGLE_ENABLE_VULKAN)
+    set(angle_use_x11 ${ANGLE_USE_X11})
     include(${ANGLE_SOURCE_DIR}/Vulkan.cmake)
+    set(angle_use_x11 FALSE)
 endif ()
 if (is_apple)
     # Metal.cmake leaves metal_internal_shader_compilation_supported empty, so

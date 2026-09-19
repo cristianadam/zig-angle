@@ -6,10 +6,11 @@
 #   -DZIG_CROSS_DIR=<path>    zig-cross checkout (default C:/Projects/github/zig-cross)
 #   -DZIG_EXECUTABLE=<path>   use this zig instead of whatever is on PATH
 #   -DANGLE_MACOS_SDK=<path>  macOS SDK, required for the Metal backend
+#   -DZIG_SYSROOT=<path>      extra target headers/libraries: <root>/include, <root>/lib
 #
 # Each of those also reads the same-named environment variable.
 
-foreach (_var ZIG_CROSS_DIR ZIG_EXECUTABLE ANGLE_MACOS_SDK)
+foreach (_var ZIG_CROSS_DIR ZIG_EXECUTABLE ANGLE_MACOS_SDK ZIG_SYSROOT)
     if (NOT ${_var} AND DEFINED ENV{${_var}})
         set(${_var} "$ENV{${_var}}")
     endif ()
@@ -140,6 +141,32 @@ if (ZIG_OS STREQUAL "windows")
             endif ()
         endforeach ()
     endif ()
+endif ()
+
+# Target headers and link libraries for things zig does not bundle and the
+# project cannot vendor - X11 and XCB, for instance, which Qt's xcb platform
+# plugin needs and which exist only as distribution packages. Layout is
+# <root>/include and <root>/lib; see the README for building one out of .deb
+# files without root.
+if (ZIG_SYSROOT)
+    if (NOT IS_DIRECTORY "${ZIG_SYSROOT}/include")
+        message(FATAL_ERROR
+            "zig-angle: ZIG_SYSROOT='${ZIG_SYSROOT}' has no include/ "
+            "directory; it does not look like a sysroot.")
+    endif ()
+    list(APPEND CMAKE_FIND_ROOT_PATH "${ZIG_SYSROOT}")
+    foreach (_lang C CXX OBJC OBJCXX)
+        if (NOT CMAKE_${_lang}_FLAGS_INIT MATCHES "${ZIG_SYSROOT}")
+            string(APPEND CMAKE_${_lang}_FLAGS_INIT
+                " -isystem \"${ZIG_SYSROOT}/include\"")
+        endif ()
+    endforeach ()
+    foreach (_kind EXE SHARED MODULE)
+        if (NOT CMAKE_${_kind}_LINKER_FLAGS_INIT MATCHES "${ZIG_SYSROOT}")
+            string(APPEND CMAKE_${_kind}_LINKER_FLAGS_INIT
+                " -L \"${ZIG_SYSROOT}/lib\"")
+        endif ()
+    endforeach ()
 endif ()
 
 # Apple frameworks are not bundled with zig, so anything past the shader
