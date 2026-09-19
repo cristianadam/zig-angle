@@ -17,14 +17,9 @@ set(_sdk_frameworks "${ANGLE_MACOS_SDK}/System/Library/Frameworks")
 # and the SDK's alloca.h fails with "unknown type name 'size_t'". -isystem lands
 # the SDK *after* zig's copies, so zig keeps owning libc and libc++ while the
 # SDK supplies what zig has not got: os/log.h, CoreServices, and the frameworks.
-add_compile_options(
-    -isystem "${_sdk_include}"
-    -iframework "${_sdk_frameworks}"
-)
-add_link_options(
-    -F "${_sdk_frameworks}"
-    -L "${ANGLE_MACOS_SDK}/usr/lib"
-)
+# The flags themselves are applied by toolchains/zig-cross.cmake, so that a
+# project other than this one also gets them. What follows is why they look the
+# way they do.
 
 # Work around a zig header bug on macOS targets. zig's bundled Apple math.h
 # does
@@ -46,4 +41,3 @@ add_link_options(
 #
 # Force-including float.h first makes clang's version take its complete path
 # before anything can ask for the partial one.
-add_compile_options(-include float.h)

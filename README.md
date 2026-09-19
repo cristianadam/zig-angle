@@ -377,6 +377,36 @@ existing ones.
   from MSL embedded in `mtl_internal_shaders_src_autogen.h`, so Apple's `metal`
   compiler is never invoked — but an SDK is still required, see below.
 
+### Qt cannot be cross-built for macOS
+
+Not a zig or ANGLE limitation - Qt's build system assumes it is running on a
+Mac. `qt_build_internals_set_up_private_api`, on the critical path of every
+Apple-targeted configure, calls out to `xcrun`:
+
+```
+CMake Error at cmake/QtPublicAppleHelpers.cmake:901:
+  Can't find xcrun in PATH
+```
+
+It only asks three questions (`--show-sdk-path`, `--show-sdk-version`,
+`xcodebuild -version`), so a stub binary gets past it - `find_program` on
+Windows only considers `.exe`/`.com`, and priming `-DQT_XCRUN=` is easier
+still. Qt then configures cleanly as `macx-clang (arm64)` with Metal.
+
+It does not get much further. Qt puts the SDK on the include path as
+`-I<sdk>/usr/include`, ahead of libc++, and the build dies in exactly the way
+the note above predicts:
+
+```
+<cctype> tried including <ctype.h> but didn't find libc++'s <ctype.h> header.
+```
+
+Which is worth chasing only if the payoff were Qt on ANGLE - and it is not.
+Just as on Windows, `opengles2` requires `NOT QT_FEATURE_opengl_desktop`, and
+the SDK's OpenGL.framework satisfies desktop GL, so ANGLE loses the condition.
+The cocoa plugin has only `qcocoaglcontext.mm` (NSOpenGLContext) and no EGL
+context class at all. Qt on macOS renders with desktop GL or Metal.
+
 ### WebAssembly is not one of the targets
 
 zig-cross ships `wasm32-wasi-musl` and `wasm32-emscripten-musl` toolchains, and

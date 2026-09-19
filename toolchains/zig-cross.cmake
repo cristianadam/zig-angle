@@ -154,4 +154,38 @@ if (ZIG_OS STREQUAL "macos" AND ANGLE_MACOS_SDK)
             "like a macOS SDK root.")
     endif ()
     set(CMAKE_FIND_ROOT_PATH "${ANGLE_MACOS_SDK}")
+
+    # -isysroot is not the way in: zig cc ignores it for cross macOS targets and
+    # always uses the Darwin headers it bundles. Putting the SDK ahead of those
+    # with -I does not work either - the two header sets fight, and libc++ ends
+    # up reporting that it "tried including <ctype.h> but didn't find libc++'s".
+    # -isystem lands the SDK *after* zig's copies, so zig keeps owning libc and
+    # libc++ while the SDK supplies what zig has not got: os/log.h, CoreServices
+    # and every framework.
+    #
+    # This belongs in the toolchain rather than the project: any target built
+    # through it needs the SDK, not just ANGLE.
+    foreach (_lang C CXX OBJC OBJCXX)
+        if (NOT CMAKE_${_lang}_FLAGS_INIT MATCHES "MacOSX|isysroot|${ANGLE_MACOS_SDK}")
+            string(APPEND CMAKE_${_lang}_FLAGS_INIT
+                " -isystem \"${ANGLE_MACOS_SDK}/usr/include\""
+                " -iframework \"${ANGLE_MACOS_SDK}/System/Library/Frameworks\"")
+        endif ()
+    endforeach ()
+    foreach (_kind EXE SHARED MODULE)
+        if (NOT CMAKE_${_kind}_LINKER_FLAGS_INIT MATCHES "${ANGLE_MACOS_SDK}")
+            string(APPEND CMAKE_${_kind}_LINKER_FLAGS_INIT
+                " -F \"${ANGLE_MACOS_SDK}/System/Library/Frameworks\""
+                " -L \"${ANGLE_MACOS_SDK}/usr/lib\"")
+        endif ()
+    endforeach ()
+
+    # zig's bundled Apple math.h asks for a partial <float.h> and poisons
+    # libc++'s guard, so FLT_MAX goes missing later in the translation unit.
+    # See cmake/AngleMacosSdk.cmake for the full story.
+    if (NOT CMAKE_CXX_FLAGS_INIT MATCHES "include float.h")
+        foreach (_lang C CXX OBJC OBJCXX)
+            string(APPEND CMAKE_${_lang}_FLAGS_INIT " -include float.h")
+        endforeach ()
+    endif ()
 endif ()
