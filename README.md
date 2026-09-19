@@ -254,19 +254,17 @@ itself a compile-time decision, set with `ANGLE_VULKAN_DISPLAY_MODE`:
 `-DANGLE_VULKAN_DISPLAY_MODE=headless` a full Qt application runs:
 
 ```
-$ QT_QPA_PLATFORM=eglfs QT_QPA_EGLFS_INTEGRATION=none \
-  ANGLE_DEFAULT_PLATFORM=vulkan ./qtgl
+$ QT_QPA_PLATFORM=eglfs ANGLE_DEFAULT_PLATFORM=vulkan ./qtgl
 GL_VENDOR  : Google Inc. (Mesa)
 GL_RENDERER: ANGLE (Mesa, Vulkan 1.4.318 (llvmpipe (LLVM 20.1.2 128 bits)), llvmpipe-25.2.8)
 GL_VERSION : OpenGL ES 3.1 (ANGLE 2.1.1 git hash: 97941c8fa290)
 qtgl: PASS
 ```
 
-That is Qt's eglfs QPA plugin, going through EGL into ANGLE, onto Vulkan. Two
-environment settings are doing real work there. `QT_QPA_EGLFS_INTEGRATION=none`
-selects eglfs's base device integration rather than a vendor one, and because
-that integration insists on opening a framebuffer node, `QT_QPA_EGLFS_FB` has
-to point somewhere readable (`/dev/zero` will do) with
+That is Qt's eglfs QPA plugin, going through EGL into ANGLE, onto Vulkan. One
+environment setting is still doing real work: eglfs's base device integration
+insists on opening a framebuffer node, so `QT_QPA_EGLFS_FB` has to point
+somewhere readable (`/dev/zero` will do) with
 `QT_QPA_EGLFS_WIDTH`/`HEIGHT` supplying the size. On real hardware with a
 framebuffer or a KMS device none of that is needed.
 
@@ -479,7 +477,7 @@ exclusions and fills in what is missing behind them. Against qtbase dev
 cd <qtbase> && git apply <zig-angle>/patches/qtbase-angle-eglfs.patch
 ```
 
-It is 244 added lines over 13 files, and most of it is small:
+It is 504 added lines over 21 files, and most of it is small:
 
 | Change | Why |
 | ------ | --- |
@@ -490,7 +488,10 @@ It is 244 added lines over 13 files, and most of it is small:
 | eglfs + minimalegl font database, event dispatcher, theme | `QGenericUnixFontDatabase` is the fontconfig-aware subclass of the portable `QFreeTypeFontDatabase`. minimalegl already handled Windows for the dispatcher. Three conditions rather than one: QtGui builds the generic Unix font database and theme for `UNIX AND NOT APPLE`, but the generic Unix event dispatcher for all of `UNIX`, so macOS wants the portable font database *with* the Unix dispatcher. |
 | `qopengl.h` includes the Khronos ES headers on macOS | see below. |
 | cocoa not built in an ES build | its GL integration is `NSOpenGLContext`/CGL, desktop GL only, so `qcocoaglcontext.mm` cannot compile against ES headers - and there would be nothing for the plugin to render with. eglfs is the QPA for ES on macOS. |
-| two GL profile bits in `qwindowsglcontext.cpp` | the WGL backend needs `GL_CONTEXT_CORE_PROFILE_BIT` to talk to `wglCreateContextAttribsARB`, and the ES headers do not define it. |
+| `qwindowseglcontext.{h,cpp}`, new | EGL support in the `windows` plugin, so ordinary decorated desktop windows render through ANGLE. See below. |
+| WGL not built in an ES build | `qwindowsglcontext.cpp` is desktop GL and does not compile against ES headers; in an ES build there is nothing for it to do. Same split in the direct2d plugin, which shares the sources. |
+| `opengl-dynamic` disabled by `INPUT_opengl=es2` | see below. |
+| `eglfs_emu` declines when the emulator is not there | see below. |
 | `FindGLESv2.cmake` picks the header it found | see below. |
 
 Three of these look like genuine upstream bugs rather than missing features.
@@ -524,20 +525,76 @@ That is the iOS system framework. Detection therefore looks for a header no ES
 implementation on macOS installs, and fails with the library and the headers
 both sitting there found. The patch tests whichever of the two it located.
 
+#### EGL in the `windows` plugin
+
+eglfs gets a full screen and nothing else. For ordinary decorated windows the
+`windows` plugin has to do it, and in Qt 6 its only OpenGL backend is WGL.
+Qt 5 had `qwindowseglcontext.cpp` for exactly this and it went away with ANGLE
+support; the abstraction it used did not. `QWindowsStaticOpenGLContext` still
+declares `createWindowSurface`/`destroyWindowSurface` "if the windowing system
+interface needs explicitly created window surfaces (like EGL)", and
+`QWindowsWindow` still creates one lazily and drops it from
+`invalidateSurface()` when the HWND is recreated. Only the backend was
+missing.
+
+The new one is about 120 lines rather than Qt 5's thousand, because it builds
+on `QEGLPlatformContext` - the same QtGui class eglfs uses - instead of
+resolving EGL through its own function table. All it adds is a static context
+holding the `EGLDisplay`, and `eglSurfaceForPlatformSurface()` asking
+`QWindowsWindow` for the surface. One consequence worth noting: the static
+context's `createContext()` had to widen from `QWindowsOpenGLContext *` to
+`QPlatformOpenGLContext *`, because `QEGLPlatformContext` is a sibling of
+`QWindowsOpenGLContext`, not a subclass.
+
+While wiring it up, `QT_FEATURE_dynamicgl` turned out to be on *together with*
+`QT_FEATURE_opengles2`. `opengl-dynamic` is disabled by `INPUT_opengl` of `no`
+or `desktop`, but never `es2` - which made sense when "dynamic" meant choosing
+between desktop GL and ANGLE at runtime, and does not now that both of its
+choices are desktop GL. Adding `es2` to that list settles the configuration,
+and with WGL out of the build the desktop-only `GL_CONTEXT_CORE_PROFILE_BIT`
+workaround goes with it.
+
+```
+$ ./qtglwindow.exe
+platform  : "windows"
+GL_RENDERER: ANGLE (Qualcomm, Qualcomm(R) Adreno(TM) X1-85 GPU, Direct3D11 vs_5_0 ps_5_0)
+GL_VERSION : OpenGL ES 3.0 (ANGLE 2.1.28778)
+centre pixel: 0 255 0 255
+qtglwindow: PASS
+```
+
+That is a real on-screen `QWindow` with `QSurface::OpenGLSurface`, cleared and
+read back. `QOffscreenSurface` works through the same path - the plugin has no
+`createPlatformOffscreenSurface`, so QtGui falls back to a hidden window - and
+the GDI backing store still drives raster windows, which is worth checking
+because the plugin no longer links `opengl32`.
+
+#### eglfs picking `eglfs_emu`
+
+`eglfs_emu` is the Qt Emulator integration and is built whenever OpenGL is,
+so on a desktop it was the only device integration plugin present and eglfs
+took it - then `screenInit()` reached
+`qFatal("EGL library doesn't support Emulator extensions")` and killed the
+process. Working around it meant setting `QT_QPA_EGLFS_INTEGRATION=none` on
+every run.
+
+The plugin already knows: it resolves `qgsGetDisplays` through
+`eglGetProcAddress` and that is null anywhere but the emulator. Returning
+nullptr from `create()` is the factory's existing way of declining - the
+caller walks its candidate list and ends at the base device integration - so
+that is all it takes. The "Failed to load EGL device integration" warning
+alongside it became misleading once declining is a normal outcome, so it is
+now a debug message.
+
 **Windows is verified end to end** - a Qt application cross-compiled here runs
 on the machine's Adreno GPU:
 
 ```
-$ QT_QPA_PLATFORM=eglfs QT_QPA_EGLFS_INTEGRATION=none ./qtglwin.exe
+$ QT_QPA_PLATFORM=eglfs ./qtglwin.exe
 GL_RENDERER: ANGLE (Qualcomm, Adreno(TM) X1-85 GPU, Direct3D11 vs_5_0 ps_5_0, D3D11-31.0.160.0)
 GL_VERSION : OpenGL ES 3.0 (ANGLE 2.1.28778)
 qtgl: PASS
 ```
-
-`QT_QPA_EGLFS_INTEGRATION=none` is needed because `eglfs_emu`, the Android
-emulator integration, is the only device integration plugin built and eglfs
-prefers it over the base one. Making the base integration the default on
-Windows is a loose end.
 
 **macOS is built and linked, not run.** qtbase cross-compiles for
 `aarch64-macos-none`, and a Qt application links against it into an arm64
