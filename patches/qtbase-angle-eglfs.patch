@@ -65,6 +65,22 @@ index a00acb3cb01..8e2851e7230 100644
 +else()
 +    set(XKB_COMMON_X11_FOUND 1)
  endif()
+diff --git a/cmake/QtTestHelpers.cmake b/cmake/QtTestHelpers.cmake
+index 4b53be077e4..6244341398f 100644
+--- a/cmake/QtTestHelpers.cmake
++++ b/cmake/QtTestHelpers.cmake
+@@ -1051,7 +1051,10 @@ function(qt_internal_add_test name)
+         endif()
+     endif()
+ 
+-    if(MACOS AND NOT CMAKE_GENERATOR STREQUAL "Xcode")
++    # CMAKE_HOST_APPLE, not just MACOS: codesign comes with Xcode and exists
++    # only on a Mac, so a cross build from any other host would fail at this
++    # POST_BUILD step with the binary already linked.
++    if(MACOS AND CMAKE_HOST_APPLE AND NOT CMAKE_GENERATOR STREQUAL "Xcode")
+         # Add com.apple.security.get-task-allow entitlement to each
+         # test binary, so we can hook into the Swift crash handling.
+         if(NOT arg_QMLTEST AND arg_SOURCES)
 diff --git a/src/corelib/thread/qthread_win.cpp b/src/corelib/thread/qthread_win.cpp
 index faec4e64140..13682f22618 100644
 --- a/src/corelib/thread/qthread_win.cpp

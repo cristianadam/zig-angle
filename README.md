@@ -477,7 +477,7 @@ exclusions and fills in what is missing behind them. Against qtbase dev
 cd <qtbase> && git apply <zig-angle>/patches/qtbase-angle-eglfs.patch
 ```
 
-It is 692 added lines over 27 files, and most of it is small:
+It is 696 added lines over 28 files, and most of it is small:
 
 | Change | Why |
 | ------ | --- |
@@ -753,8 +753,9 @@ there is no `qsb`, `qmltyperegistrar`, `qmlcachegen` or `qmlimportscanner` for
 the cross build to call. Rebuild the host qtbase with the GUI in, into the
 same prefix, then build host qtshadertools and host qtdeclarative against it.
 
-**Verified on Linux.** A Qt Quick application cross-compiled here runs under
-WSLg, scene graph and all:
+**Verified on Linux and Windows.** A Qt Quick application cross-compiled
+here runs on both, scene graph and all - under WSLg through the xcb plugin,
+and natively on this machine's Adreno through the windows plugin:
 
 ```
 $ QT_QPA_PLATFORM=xcb ANGLE_DEFAULT_PLATFORM=vulkan ./quickangle
@@ -762,16 +763,28 @@ platform   : "xcb"
 sg backend : 3          # QSGRendererInterface::OpenGL
 bottom pixel: 0 128 0
 qtquick: PASS
+
+> quickangle.exe
+platform   : "windows"
+sg backend : 3
+bottom pixel: 0 128 0
+qtquick: PASS
 ```
 
-That is QML through the Qt Quick scene graph, the RHI's OpenGL backend, EGL,
-ANGLE, `VK_KHR_xcb_surface` and Vulkan. The test uses `qt_add_qml_module`, so
-`qmltyperegistrar`, `qmlcachegen` and `qmlimportscanner` all ran out of the
-host Qt rather than just the compiler being exercised. Qt no longer ships
-fonts, so a bare prefix warns about the missing font directory and draws no
-text; it is a deployment matter, not a build one.
+That is QML through the Qt Quick scene graph, the RHI's OpenGL backend, EGL
+and ANGLE - onto `VK_KHR_xcb_surface` and Vulkan on Linux, onto D3D11 on
+Windows, the latter through the EGL backend added to the windows plugin above.
+The test uses `qt_add_qml_module`, so `qmltyperegistrar`, `qmlcachegen` and
+`qmlimportscanner` all ran out of the host Qt rather than just the compiler
+being exercised. Qt no longer ships fonts, so a bare prefix warns about the
+missing font directory and draws no text; a deployment matter, not a build one.
 
-Two things to know.
+**macOS builds and links**, qtshadertools and qtdeclarative both, and the same
+application comes out as an arm64 `MH_EXECUTE` resolving `libQt6Quick`,
+`libQt6Qml`, `libGLESv2` and `libEGL` through `@rpath`. As with everything
+else Apple here, it has not been run.
+
+Four things to know.
 
 `qquickgraphicsconfiguration.cpp` calls `QRhiVulkanInitParams::preferredInstanceExtensions()`
 under `#if QT_CONFIG(vulkan)`, while `rhi/qrhi_platform.h` declares that type
@@ -782,6 +795,25 @@ has Vulkan on with headers borrowed from the ANGLE checkout, and that path is
 not propagated to a separately configured module, so qtdeclarative needs the
 same `-DVulkan_INCLUDE_DIR=` qtbase got. Linux and macOS do not hit it, having
 Vulkan off in Qt.
+
+Two more, both Apple-only and both about the *host* rather than the target.
+
+`qt_build_internals_set_up_system_prefixes()` does
+`if(APPLE AND NOT FEATURE_pkg_config)` and then stops `qt_find_package` from
+consulting `PATH`, so that a build on a Mac does not pick up Homebrew. Cross
+compiling to Apple from elsewhere, that also hides host build tools which live
+only on `PATH` - and qtdeclarative does `qt_find_package(Python MODULE REQUIRED)`,
+Python being a build-time code generator. Pass `-DPython_EXECUTABLE=` to get
+past it.
+
+`qtdeclarative/tools/qmltestrunner/CMakeLists.txt` attaches a `codesign`
+POST_BUILD step under `if(MACOS AND NOT CMAKE_GENERATOR STREQUAL "Xcode")`.
+That describes the target, not the machine doing the work: `codesign` ships
+with Xcode and exists only on a Mac, so the build fails after the binary is
+already linked. `patches/qtdeclarative-cross-codesign.patch` adds
+`CMAKE_HOST_APPLE` to the condition. qtbase's `qt_internal_add_test` has the
+same guard and the same problem - it only shows up with `QT_BUILD_TESTS=ON` -
+and that one is fixed in the qtbase patch.
 
 And a footgun of one's own making rather than Qt's: `qt_add_qml_module(URI Foo)`
 creates a directory `Foo/` beside the binary, so a target also called `foo`
@@ -1108,6 +1140,7 @@ CMakePresets.json            one configure/build/test/workflow preset per triple
 tools/gni-to-cmake.patch     two fixes to WebKit's GN-to-CMake converter
 tools/make-linux-sysroot.sh  builds the ZIG_SYSROOT tree from distribution packages
 patches/qtbase-angle-eglfs.patch  makes Qt able to use ANGLE on Windows/macOS
+patches/qtdeclarative-cross-codesign.patch  do not codesign when the host is not a Mac
 ```
 
 `cmake/AngleSources.cmake` includes `Compiler.cmake`, `GLESv2.cmake`,

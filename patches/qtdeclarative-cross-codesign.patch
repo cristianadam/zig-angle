@@ -1,0 +1,16 @@
+diff --git a/tools/qmltestrunner/CMakeLists.txt b/tools/qmltestrunner/CMakeLists.txt
+index 2bf40e7c4c..75437a7cc8 100644
+--- a/tools/qmltestrunner/CMakeLists.txt
++++ b/tools/qmltestrunner/CMakeLists.txt
+@@ -8,7 +8,10 @@
+ #####################################################################
+ 
+ function(qt_internal_add_entitlements_to_qmltestrunner target)
+-    if(MACOS AND NOT CMAKE_GENERATOR STREQUAL "Xcode")
++    # CMAKE_HOST_APPLE, not just MACOS: codesign comes with Xcode and exists
++    # only on a Mac, so a cross build from any other host fails at this
++    # POST_BUILD step with the binary already linked.
++    if(MACOS AND CMAKE_HOST_APPLE AND NOT CMAKE_GENERATOR STREQUAL "Xcode")
+         # Add com.apple.security.get-task-allow entitlement to runner,
+         # so we can hook into the Swift crash handling.
+         set(entitlements_file
