@@ -188,6 +188,56 @@ if (ZIG_OS STREQUAL "macos" AND ANGLE_MACOS_SDK)
             "${CMAKE_CURRENT_LIST_DIR}/zig-darwin-rules.cmake")
     endif ()
 
+    # zig's AvailabilityInternal.h hardcodes __MAC_OS_X_VERSION_MAX_ALLOWED to
+    # __MAC_27_0 whatever SDK is on the include path, so every "is the SDK new
+    # enough" test answers yes and code gets compiled against symbols the SDK
+    # has never heard of - Qt reaching for NSAccessibilityLanguageAttribute
+    # behind QT_APPLE_SDK_EQUAL_OR_ABOVE(MACOS(26)), for one. That whole block
+    # is skipped when __MAC_OS_X_VERSION_MIN_REQUIRED is already defined, so
+    # define both: the minimum stays whatever clang worked out for the target,
+    # and the maximum becomes the SDK actually attached.
+    set(_zig_sdk_version "")
+    if (EXISTS "${ANGLE_MACOS_SDK}/SDKSettings.json")
+        file(READ "${ANGLE_MACOS_SDK}/SDKSettings.json" _zig_sdk_settings)
+        string(JSON _zig_sdk_version ERROR_VARIABLE _zig_sdk_json_error
+            GET "${_zig_sdk_settings}" "Version")
+    endif ()
+    if (NOT _zig_sdk_version AND ANGLE_MACOS_SDK MATCHES "MacOSX([0-9]+\.[0-9]+)")
+        set(_zig_sdk_version "${CMAKE_MATCH_1}")
+    endif ()
+    if (_zig_sdk_version MATCHES "^([0-9]+)\.([0-9]+)")
+        math(EXPR _zig_sdk_max "${CMAKE_MATCH_1} * 10000 + ${CMAKE_MATCH_2} * 100")
+        foreach (_lang C CXX OBJC OBJCXX)
+            if (NOT CMAKE_${_lang}_FLAGS_INIT MATCHES "__MAC_OS_X_VERSION_MAX_ALLOWED")
+                string(APPEND CMAKE_${_lang}_FLAGS_INIT
+                    " -D__MAC_OS_X_VERSION_MIN_REQUIRED=__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__"
+                    " -D__MAC_OS_X_VERSION_MAX_ALLOWED=${_zig_sdk_max}")
+            endif ()
+        endforeach ()
+    else ()
+        message(WARNING
+            "zig-angle: could not determine the version of the SDK at "
+            "'${ANGLE_MACOS_SDK}'. zig will report it as macOS 27 and any "
+            "availability-gated code will be compiled against symbols the SDK "
+            "may not have.")
+    endif ()
+
+    # CMAKE_<LANG>_FLAGS_INIT only seeds the cache on the first configure, so a
+    # build tree first configured without the SDK - which fails, but not before
+    # caching empty flags - would silently go on building without it, and say
+    # so only as "os/log.h file not found".
+    foreach (_lang C CXX OBJC OBJCXX)
+        if (DEFINED CACHE{CMAKE_${_lang}_FLAGS}
+                AND NOT "$CACHE{CMAKE_${_lang}_FLAGS}" MATCHES "${ANGLE_MACOS_SDK}")
+            message(FATAL_ERROR
+                "zig-angle: this build tree has cached CMAKE_${_lang}_FLAGS that "
+                "do not attach '${ANGLE_MACOS_SDK}'. CMake applies a toolchain's "
+                "flags only to a fresh cache, so a tree first configured without "
+                "the SDK keeps building without it. Delete the build directory "
+                "and configure again.")
+        endif ()
+    endforeach ()
+
     # zig's bundled Apple math.h asks for a partial <float.h> and poisons
     # libc++'s guard, so FLT_MAX goes missing later in the translation unit.
     # See cmake/AngleMacosSdk.cmake for the full story.

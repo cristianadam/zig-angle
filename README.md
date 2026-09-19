@@ -477,7 +477,7 @@ exclusions and fills in what is missing behind them. Against qtbase dev
 cd <qtbase> && git apply <zig-angle>/patches/qtbase-angle-eglfs.patch
 ```
 
-It is 504 added lines over 21 files, and most of it is small:
+It is 666 added lines over 26 files, and most of it is small:
 
 | Change | Why |
 | ------ | --- |
@@ -487,7 +487,8 @@ It is 504 added lines over 21 files, and most of it is small:
 | eglfs screen metrics on Windows | the `q_*FromFb` helpers are `#ifdef Q_OS_UNIX`; GDI answers the same questions. |
 | eglfs + minimalegl font database, event dispatcher, theme | `QGenericUnixFontDatabase` is the fontconfig-aware subclass of the portable `QFreeTypeFontDatabase`. minimalegl already handled Windows for the dispatcher. Three conditions rather than one: QtGui builds the generic Unix font database and theme for `UNIX AND NOT APPLE`, but the generic Unix event dispatcher for all of `UNIX`, so macOS wants the portable font database *with* the Unix dispatcher. |
 | `qopengl.h` includes the Khronos ES headers on macOS | see below. |
-| cocoa not built in an ES build | its GL integration is `NSOpenGLContext`/CGL, desktop GL only, so `qcocoaglcontext.mm` cannot compile against ES headers - and there would be nothing for the plugin to render with. eglfs is the QPA for ES on macOS. |
+| `qcocoaeglcontext.{h,mm}`, new | the same for the `cocoa` plugin, rendering into the window's content `CALayer`. See below. |
+| NSOpenGL not built in an ES build | `qcocoaglcontext.mm` is desktop GL and does not compile against ES headers; macOS has no system ES, so an ES build is a third-party implementation reached through EGL. |
 | `qwindowseglcontext.{h,cpp}`, new | EGL support in the `windows` plugin, so ordinary decorated desktop windows render through ANGLE. See below. |
 | WGL not built in an ES build | `qwindowsglcontext.cpp` is desktop GL and does not compile against ES headers; in an ES build there is nothing for it to do. Same split in the direct2d plugin, which shares the sources. |
 | `opengl-dynamic` disabled by `INPUT_opengl=es2` | see below. |
@@ -569,6 +570,30 @@ read back. `QOffscreenSurface` works through the same path - the plugin has no
 the GDI backing store still drives raster windows, which is worth checking
 because the plugin no longer links `opengl32`.
 
+#### EGL in the `cocoa` plugin
+
+The same gap as on Windows, and the same answer, but without the scaffolding:
+`QCocoaIntegration::createPlatformOpenGLContext()` just does
+`return new QCocoaGLContext(context)`, with no static-context indirection and
+no window-surface hook to fill in. What macOS does have is the important part -
+`QNSView` is layer-backed, and `QCocoaWindow::contentLayer()` hands over the
+`CALayer` that ANGLE's Metal backend accepts as its `EGLNativeWindowType`.
+ANGLE checks it with `-isKindOfClass` and, finding a plain `CALayer`, adds a
+`CAMetalLayer` of its own beneath it, set to autoresize with the parent - so
+window resizes need no handling at all on Qt's side.
+
+`QCocoaEGLContext` is another `QEGLPlatformContext` subclass. The surface
+itself is owned by `QCocoaWindow`, as a `void *` so the EGL headers stay out of
+that header, and released in its destructor. Two smaller adjustments came with
+it: `QCocoaOffscreenSurface` is a stub, because an `NSOpenGLContext` needs no
+drawable to be made current, so an ES build hands out QtGui's `QEGLPbuffer`
+instead; and the macOS 26 software-renderer probe in `hasCapability()` is
+skipped, since it casts the context to `QCocoaGLContext` to ask a question that
+only has an NSOpenGL answer.
+
+Unlike the Windows one, **none of this has been run** - see the macOS note at
+the end of this section.
+
 #### eglfs picking `eglfs_emu`
 
 `eglfs_emu` is the Qt Emulator integration and is built whenever OpenGL is,
@@ -597,19 +622,21 @@ qtgl: PASS
 ```
 
 **macOS is built and linked, not run.** qtbase cross-compiles for
-`aarch64-macos-none`, and a Qt application links against it into an arm64
-`MH_EXECUTE` that resolves Qt and ANGLE through `@rpath`:
+`aarch64-macos-none` with both `eglfs` and `cocoa`, and a windowed Qt
+application links against it into an arm64 `MH_EXECUTE` resolving Qt and ANGLE
+through `@rpath`:
 
 ```
-rpath  <build>/lib
-dep    @rpath/libQt6Gui.6.dylib
-dep    @rpath/libGLESv2.dylib
-dep    @rpath/libEGL.dylib
+cputype 0x100000c filetype 2 (MH_EXECUTE)
+dep     @rpath/libQt6Gui.6.dylib
+dep     @rpath/libGLESv2.dylib
+dep     @rpath/libEGL.dylib
 ```
 
-Nothing here can execute a macOS binary though, so the `CALayer` path in
-particular has never run - treat it as a starting point rather than a finished
-port. Building it also needs the flags under *Cross-building Qt for macOS*.
+Nothing here can execute a macOS binary though, so neither `CALayer` path -
+eglfs's fabricated layer nor cocoa's content layer - has ever run. Treat the
+macOS side as a starting point rather than a finished port. Building it also
+needs the flags under *Cross-building Qt for macOS*.
 
 ### Vulkan, from an upstream ANGLE checkout
 
@@ -846,6 +873,37 @@ filename and is not converted, so the same rules override folds `@rpath/` into
 the soname flag and drops `TARGET_INSTALLNAME_DIR`. The cost is that a custom
 `INSTALL_NAME_DIR` stops having an effect - which on this host it could not
 have had anyway, there being no `install_name_tool`.
+
+**The SDK version is reported as macOS 27, whatever SDK is attached.**
+`AvailabilityInternal.h` as zig ships it hardcodes
+
+```c
+#define __MAC_OS_X_VERSION_MAX_ALLOWED __MAC_27_0
+```
+
+so every "is the SDK new enough" test answers yes, and code gets compiled
+against symbols the SDK has never heard of. Qt's
+`QT_APPLE_SDK_EQUAL_OR_ABOVE(MACOS(26))` guard around
+`NSAccessibilityLanguageAttribute` is one: the constant is new in macOS 26, the
+guard is there precisely so an older SDK skips it, and with a 15.5 SDK the
+build still fails on `use of undeclared identifier`.
+
+The whole block is skipped when `__MAC_OS_X_VERSION_MIN_REQUIRED` is already
+defined, so the toolchain defines both - the minimum deferring to clang's own
+`__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__`, and the maximum taken from the
+`Version` in the SDK's `SDKSettings.json`:
+
+```
+-D__MAC_OS_X_VERSION_MIN_REQUIRED=__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__
+-D__MAC_OS_X_VERSION_MAX_ALLOWED=150500
+```
+
+One trap worth knowing while we are here, and not zig's: `CMAKE_<LANG>_FLAGS_INIT`
+seeds the cache only on the *first* configure. A build tree first configured
+without `ANGLE_MACOS_SDK` caches empty flags, and every configure after that -
+SDK or no SDK - silently builds without one, announcing itself much later as
+`os/log.h file not found`. The toolchain now refuses such a tree and says to
+delete it.
 
 **Some glibc feature macros are exposed below the version that provides the
 function.** zig ships a single copy of recent glibc headers and gates the

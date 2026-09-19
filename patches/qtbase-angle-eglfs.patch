@@ -100,22 +100,281 @@ index 182f6f44279..1d7861f258c 100644
  
  // In "es2" builds (QT_CONFIG(opengles2)) additional defines indicate GLES 3.0 or
  // higher is available *at build time*. In this case include the corresponding
-diff --git a/src/plugins/platforms/CMakeLists.txt b/src/plugins/platforms/CMakeLists.txt
-index dd7b28d87b1..534c2784391 100644
---- a/src/plugins/platforms/CMakeLists.txt
-+++ b/src/plugins/platforms/CMakeLists.txt
-@@ -16,7 +16,10 @@ endif()
- if(UIKIT AND NOT WATCHOS)
-     add_subdirectory(ios)
- endif()
--if(MACOS)
-+# The cocoa plugin's GL integration is NSOpenGL/CGL, which is desktop GL only -
-+# in an OpenGL ES build qcocoaglcontext.mm cannot compile, and there is nothing
-+# for the plugin to render with anyway. eglfs is the QPA for ES on macOS.
-+if(MACOS AND NOT QT_FEATURE_opengles2)
-     add_subdirectory(cocoa)
- endif()
- if(WIN32)
+diff --git a/src/plugins/platforms/cocoa/CMakeLists.txt b/src/plugins/platforms/cocoa/CMakeLists.txt
+index ce71ba17499..2bd7ef577c6 100644
+--- a/src/plugins/platforms/cocoa/CMakeLists.txt
++++ b/src/plugins/platforms/cocoa/CMakeLists.txt
+@@ -1,6 +1,8 @@
+ # Copyright (C) 2022 The Qt Company Ltd.
+ # SPDX-License-Identifier: BSD-3-Clause
+ 
++qt_find_package(EGL MODULE)
++
+ #####################################################################
+ ## QCocoaIntegrationPlugin Plugin:
+ #####################################################################
+@@ -110,11 +112,25 @@ qt_internal_add_resource(QCocoaIntegrationPlugin "qcocoaresources"
+ ## Scopes:
+ #####################################################################
+ 
+-qt_internal_extend_target(QCocoaIntegrationPlugin CONDITION QT_FEATURE_opengl
++# NSOpenGL and EGL are alternatives, not layers: qcocoaglcontext.mm is desktop
++# GL and does not compile against ES headers, and macOS has no system ES, so an
++# ES build is necessarily a third-party implementation reached through EGL.
++qt_internal_extend_target(QCocoaIntegrationPlugin CONDITION QT_FEATURE_opengl AND NOT QT_FEATURE_opengles2
+     SOURCES
+         qcocoaglcontext.h qcocoaglcontext.mm
+ )
+ 
++qt_internal_extend_target(QCocoaIntegrationPlugin CONDITION QT_FEATURE_opengles2
++    SOURCES
++        qcocoaeglcontext.h qcocoaeglcontext.mm
++    DEFINES
++        # eglplatform.h reaches for X11/Xlib.h when no platform matches, and
++        # none does on Apple. Same define eglfs uses.
++        QT_EGL_NO_X11
++    LIBRARIES
++        EGL::EGL
++)
++
+ qt_internal_extend_target(QCocoaIntegrationPlugin CONDITION QT_FEATURE_vulkan
+     SOURCES
+         qcocoavulkaninstance.h qcocoavulkaninstance.mm
+diff --git a/src/plugins/platforms/cocoa/qcocoaeglcontext.h b/src/plugins/platforms/cocoa/qcocoaeglcontext.h
+new file mode 100644
+index 00000000000..255b7e63548
+--- /dev/null
++++ b/src/plugins/platforms/cocoa/qcocoaeglcontext.h
+@@ -0,0 +1,36 @@
++// Copyright (C) 2026 The Qt Company Ltd.
++// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
++
++#ifndef QCOCOAEGLCONTEXT_H
++#define QCOCOAEGLCONTEXT_H
++
++#include <QtGui/private/qeglplatformcontext_p.h>
++#include <QtGui/private/qt_egl_p.h>
++
++QT_BEGIN_NAMESPACE
++
++class QCocoaWindow;
++
++// The OpenGL ES alternative to QCocoaGLContext. macOS has no system ES, so
++// this is always a third-party implementation - ANGLE, in practice, whose
++// Metal backend takes a CALayer as its EGLNativeWindowType and hangs a
++// CAMetalLayer off it. QCocoaWindow's content layer is exactly that.
++class QCocoaEGLContext : public QEGLPlatformContext
++{
++public:
++    explicit QCocoaEGLContext(QOpenGLContext *context);
++
++    // Shared across the plugin: one display, initialized on first use.
++    static EGLDisplay eglDisplay();
++
++protected:
++    EGLSurface eglSurfaceForPlatformSurface(QPlatformSurface *surface) override;
++};
++
++// Declared here so that qcocoawindow.mm can release the surface it owns
++// without pulling in the EGL headers.
++void qt_cocoaDestroyEglSurface(void *surface);
++
++QT_END_NAMESPACE
++
++#endif // QCOCOAEGLCONTEXT_H
+diff --git a/src/plugins/platforms/cocoa/qcocoaeglcontext.mm b/src/plugins/platforms/cocoa/qcocoaeglcontext.mm
+new file mode 100644
+index 00000000000..6f7e3649ae3
+--- /dev/null
++++ b/src/plugins/platforms/cocoa/qcocoaeglcontext.mm
+@@ -0,0 +1,78 @@
++// Copyright (C) 2026 The Qt Company Ltd.
++// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
++
++#include "qcocoaeglcontext.h"
++#include "qcocoawindow.h"
++
++#include <QtGui/private/qeglpbuffer_p.h>
++
++#include <QtCore/qloggingcategory.h>
++
++QT_BEGIN_NAMESPACE
++
++Q_STATIC_LOGGING_CATEGORY(lcQpaCocoaEgl, "qt.qpa.cocoa.egl")
++
++EGLDisplay QCocoaEGLContext::eglDisplay()
++{
++    static EGLDisplay display = []() -> EGLDisplay {
++        EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
++        if (dpy == EGL_NO_DISPLAY) {
++            qCWarning(lcQpaCocoaEgl, "No EGL display available");
++            return EGL_NO_DISPLAY;
++        }
++        EGLint major = 0;
++        EGLint minor = 0;
++        if (!eglInitialize(dpy, &major, &minor)) {
++            qCWarning(lcQpaCocoaEgl, "Could not initialize EGL: 0x%x", eglGetError());
++            return EGL_NO_DISPLAY;
++        }
++        qCDebug(lcQpaCocoaEgl, "EGL %d.%d initialized: %s (%s)", major, minor,
++                eglQueryString(dpy, EGL_VENDOR), eglQueryString(dpy, EGL_VERSION));
++        return dpy;
++    }();
++    return display;
++}
++
++QCocoaEGLContext::QCocoaEGLContext(QOpenGLContext *context)
++    : QEGLPlatformContext(context->format(), context->shareHandle(), eglDisplay())
++{
++}
++
++EGLSurface QCocoaEGLContext::eglSurfaceForPlatformSurface(QPlatformSurface *surface)
++{
++    if (surface->surface()->surfaceClass() != QSurface::Window)
++        return static_cast<QEGLPbuffer *>(surface)->pbuffer();
++
++    auto *window = static_cast<QCocoaWindow *>(surface);
++    if (window->m_eglSurface)
++        return static_cast<EGLSurface>(window->m_eglSurface);
++
++    CALayer *layer = window->contentLayer();
++    if (!layer) {
++        qCWarning(lcQpaCocoaEgl) << "No content layer to render into for" << window->window();
++        return EGL_NO_SURFACE;
++    }
++
++    // ANGLE's Metal backend checks the native window with -isKindOfClass and
++    // adds a CAMetalLayer of its own underneath it, resizing that along with
++    // the parent - so the surface survives window resizes and there is nothing
++    // to do on geometry changes.
++    EGLSurface eglSurface = eglCreateWindowSurface(eglDisplay(), eglConfig(),
++                                                   reinterpret_cast<EGLNativeWindowType>(layer),
++                                                   nullptr);
++    if (eglSurface == EGL_NO_SURFACE) {
++        qCWarning(lcQpaCocoaEgl, "Could not create the EGL window surface: 0x%x", eglGetError());
++        return EGL_NO_SURFACE;
++    }
++
++    window->m_eglSurface = eglSurface;
++    return eglSurface;
++}
++
++void qt_cocoaDestroyEglSurface(void *surface)
++{
++    if (surface)
++        eglDestroySurface(QCocoaEGLContext::eglDisplay(), static_cast<EGLSurface>(surface));
++}
++
++QT_END_NAMESPACE
+diff --git a/src/plugins/platforms/cocoa/qcocoaintegration.mm b/src/plugins/platforms/cocoa/qcocoaintegration.mm
+index 98dc1122975..09148d95be1 100644
+--- a/src/plugins/platforms/cocoa/qcocoaintegration.mm
++++ b/src/plugins/platforms/cocoa/qcocoaintegration.mm
+@@ -36,6 +36,10 @@
+ #include <QtGui/private/qmacmimeregistry_p.h>
+ #ifndef QT_NO_OPENGL
+ #  include <QtGui/private/qopenglcontext_p.h>
++#  if QT_CONFIG(opengles2)
++#    include "qcocoaeglcontext.h"
++#    include <QtGui/private/qeglpbuffer_p.h>
++#  endif
+ #endif
+ #include <QtGui/private/qrhibackingstore_p.h>
+ #include <QtGui/private/qfontengine_coretext_p.h>
+@@ -235,7 +239,7 @@ bool QCocoaIntegration::hasCapability(QPlatformIntegration::Capability cap) cons
+         // layer-backed.
+         return false;
+     case OpenGL:
+-#if defined(Q_PROCESSOR_ARM)
++#if defined(Q_PROCESSOR_ARM) && !QT_CONFIG(opengles2)
+         if (QOperatingSystemVersion::current() >= QOperatingSystemVersion::MacOSTahoe) {
+             // Tahoe has issues with software-backed GL, crashing in common operations
+             static bool isSoftwareContext = []{
+@@ -310,13 +314,21 @@ public:
+ 
+ QPlatformOffscreenSurface *QCocoaIntegration::createPlatformOffscreenSurface(QOffscreenSurface *surface) const
+ {
++#if !defined(QT_NO_OPENGL) && QT_CONFIG(opengles2)
++    return new QEGLPbuffer(QCocoaEGLContext::eglDisplay(), surface->requestedFormat(), surface);
++#else
+     return new QCocoaOffscreenSurface(surface);
++#endif
+ }
+ 
+ #ifndef QT_NO_OPENGL
+ QPlatformOpenGLContext *QCocoaIntegration::createPlatformOpenGLContext(QOpenGLContext *context) const
+ {
++#if QT_CONFIG(opengles2)
++    return new QCocoaEGLContext(context);
++#else
+     return new QCocoaGLContext(context);
++#endif
+ }
+ 
+ QOpenGLContext *QCocoaIntegration::createOpenGLContext(NSOpenGLContext *nativeContext, QOpenGLContext *shareContext) const
+@@ -324,11 +336,18 @@ QOpenGLContext *QCocoaIntegration::createOpenGLContext(NSOpenGLContext *nativeCo
+     if (!nativeContext)
+         return nullptr;
+ 
++#if QT_CONFIG(opengles2)
++    // An NSOpenGLContext is desktop GL; there is nothing here to adopt it into.
++    Q_UNUSED(shareContext);
++    qWarning("Cannot adopt an NSOpenGLContext in an OpenGL ES build");
++    return nullptr;
++#else
+     auto *context = new QOpenGLContext;
+     context->setShareContext(shareContext);
+     auto *contextPrivate = QOpenGLContextPrivate::get(context);
+     contextPrivate->adopt(new QCocoaGLContext(nativeContext));
+     return context;
++#endif
+ }
+ 
+ #endif
+diff --git a/src/plugins/platforms/cocoa/qcocoawindow.h b/src/plugins/platforms/cocoa/qcocoawindow.h
+index 607b1c242d9..8fb1494cfdf 100644
+--- a/src/plugins/platforms/cocoa/qcocoawindow.h
++++ b/src/plugins/platforms/cocoa/qcocoawindow.h
+@@ -239,6 +239,13 @@ public: // for QNSView
+ 
+     NSView *m_view = nil;
+ 
++#if QT_CONFIG(opengles2)
++    // The EGL window surface on the content layer, created on demand by
++    // QCocoaEGLContext and owned here so that it dies with the window. void*
++    // rather than EGLSurface to keep the EGL headers out of this one.
++    void *m_eglSurface = nullptr;
++#endif
++
+     Qt::WindowStates m_lastReportedWindowState = Qt::WindowNoState;
+ 
+     static QPointer<QCocoaWindow> s_windowUnderMouse;
+diff --git a/src/plugins/platforms/cocoa/qcocoawindow.mm b/src/plugins/platforms/cocoa/qcocoawindow.mm
+index 7b1e6bed1e2..a9f7afbbfe9 100644
+--- a/src/plugins/platforms/cocoa/qcocoawindow.mm
++++ b/src/plugins/platforms/cocoa/qcocoawindow.mm
+@@ -12,6 +12,9 @@
+ #include "qcocoaeventdispatcher.h"
+ #ifndef QT_NO_OPENGL
+ #include "qcocoaglcontext.h"
++#if QT_CONFIG(opengles2)
++#include "qcocoaeglcontext.h"
++#endif
+ #endif
+ #include "qcocoahelpers.h"
+ #include "qcocoanativeinterface.h"
+@@ -226,6 +229,11 @@ QCocoaWindow::~QCocoaWindow()
+ 
+     QMacAutoReleasePool pool;
+ 
++#if QT_CONFIG(opengles2)
++    qt_cocoaDestroyEglSurface(m_eglSurface);
++    m_eglSurface = nullptr;
++#endif
++
+     if (window()->flags() & Qt::ExpandedClientAreaHint) {
+         // We expanded the client area during initialization, so we need
+         // to adjust the size back now, so that recreating the window again
 diff --git a/src/plugins/platforms/direct2d/CMakeLists.txt b/src/plugins/platforms/direct2d/CMakeLists.txt
 index 7f625fc8faa..83382f220d7 100644
 --- a/src/plugins/platforms/direct2d/CMakeLists.txt
