@@ -75,6 +75,21 @@ jobs:
       - name: Build and test
         run: cmake --workflow --preset ${{ matrix.preset }}
 
+      # So a downloaded binary can be traced back to what produced it.
+      - name: Stamp the build
+        shell: bash
+        run: |
+          {
+            echo "target:     ${{ matrix.preset }}"
+            echo "version:    ${GITHUB_REF_NAME}"
+            echo "commit:     ${GITHUB_SHA}"
+            echo "angle:      $(git -C third_party/angle rev-parse HEAD)"
+            echo "zig:        $(zig version)"
+            echo "built:      $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "workflow:   ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } > dist/${{ matrix.preset }}/BUILDINFO.txt
+          cat dist/${{ matrix.preset }}/BUILDINFO.txt
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.preset }}
@@ -121,6 +136,21 @@ jobs:
       - name: Build and test
         run: cmake --workflow --preset ${{ matrix.preset }}
 
+      # So a downloaded binary can be traced back to what produced it.
+      - name: Stamp the build
+        shell: bash
+        run: |
+          {
+            echo "target:     ${{ matrix.preset }}"
+            echo "version:    ${GITHUB_REF_NAME}"
+            echo "commit:     ${GITHUB_SHA}"
+            echo "angle:      $(git -C third_party/angle rev-parse HEAD)"
+            echo "zig:        $(zig version)"
+            echo "built:      $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "workflow:   ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } > dist/${{ matrix.preset }}/BUILDINFO.txt
+          cat dist/${{ matrix.preset }}/BUILDINFO.txt
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.preset }}
@@ -161,3 +191,53 @@ jobs:
           if "%rc%"=="0" exit /b 0
           if "%rc%"=="77" exit /b 0
           exit /b 1
+
+  # Packaged downloads. Every run leaves per-target artifacts behind, which
+  # expire; pushing a v* tag turns the same trees into release assets, which do
+  # not. Asset names carry no version, so that
+  #   .../releases/latest/download/zig-angle-x86_64-linux-gnu.tar.gz
+  # is a permanent link to the newest one. The version is inside, in
+  # BUILDINFO.txt, together with the ANGLE and zig revisions it was built from.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [cross, macos, windows-run]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dl
+
+      - name: Package
+        # Fail on the first problem rather than publishing an empty archive:
+        # a missing zip would otherwise leave a 0-byte asset behind and say
+        # nothing about it.
+        run: |
+          set -euo pipefail
+          sudo apt-get update && sudo apt-get install -y zip
+          mkdir -p assets
+          out=$PWD/assets
+          for dir in dl/*/; do
+              target=$(basename "$dir")
+              case "$target" in
+                  *-windows-*) ( cd "$dir" && zip -qr "$out/zig-angle-$target.zip" . ) ;;
+                  *)           tar -czf "$out/zig-angle-$target.tar.gz" -C "$dir" . ;;
+              esac
+          done
+          ls -lh assets
+          # Every target that was built must have produced a non-empty asset.
+          for f in assets/*; do
+              [ -s "$f" ] || { echo "empty asset: $f" >&2; exit 1; }
+          done
+          n=$(ls -1 dl | wc -l); m=$(ls -1 assets | wc -l)
+          [ "$n" = "$m" ] || { echo "$n artifacts but $m assets" >&2; exit 1; }
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" assets/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes

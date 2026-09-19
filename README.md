@@ -1253,6 +1253,42 @@ change:
   the x86_64 runner and both arm64 builds on `windows-11-arm`. A hosted runner may well have
 no usable GPU, and the test reports that as exit 77 rather than failing.
 
+### Downloads
+
+Every run leaves a per-target artifact behind, which is convenient while a
+branch is in flight but expires. Pushing a `v*` tag turns the same trees into
+release assets, which do not:
+
+```
+zig-angle-x86_64-linux-gnu.tar.gz      zig-angle-x86_64-windows-gnu.zip
+zig-angle-aarch64-linux-gnu.tar.gz     zig-angle-aarch64-windows-gnu.zip
+zig-angle-aarch64-macos-none.tar.gz    ...
+```
+
+The names carry no version, deliberately, so that
+
+```
+https://github.com/<owner>/zig-angle/releases/latest/download/zig-angle-x86_64-linux-gnu.tar.gz
+```
+
+is a permanent link to the newest build of that target. Which build that is
+lives inside, in `BUILDINFO.txt`:
+
+```
+target:     x86_64-linux-gnu
+version:    v0.1.0
+commit:     <sha of this repository>
+angle:      <sha of the ANGLE submodule>
+zig:        0.17.0-dev.2228+955228b68
+built:      2026-09-19T20:07:11Z
+workflow:   https://github.com/<owner>/zig-angle/actions/runs/<id>
+```
+
+so a binary someone downloaded a year ago can still be traced to the ANGLE and
+zig revisions that produced it. The release job runs only for tags and only
+after every build and every smoke test has passed, so a tag cannot publish
+something that failed.
+
 zig is taken from `master` rather than pinned. Dev tarballs are pruned from
 ziglang.org after a while, so a pinned one would rot; the cost is that upstream
 zig can break the build. 0.16.0 is not an option - it access-violates on ARM64
