@@ -293,12 +293,29 @@ vulkan-headers already fetched for ANGLE's Vulkan backend serve:
 cmake <qt build> -DVulkan_INCLUDE_DIR=<angle>/third_party/vulkan-headers/src/include                  -DFEATURE_vulkan=ON
 ```
 
-The second flag matters. Qt pins the user-facing `FEATURE_*` entries in the
-cache, so a tree first configured without the headers keeps `FEATURE_vulkan`
-`OFF` even once they appear, and the computed condition never gets a look in.
-Configuring fresh avoids it. Either way `libqvkkhrdisplay.so` then builds, and
-Qt's Vulkan works - `QVulkanInstance::create()`, 24 extensions, llvmpipe
-enumerated - the plugin just cannot find a display to scan out to.
+`-DFEATURE_vulkan=ON` is only needed on a tree that was first configured
+*without* the headers: Qt pins the user-facing `FEATURE_*` entries in the
+cache, so the computed condition never gets a look in afterwards. Configure
+fresh with `Vulkan_INCLUDE_DIR` set and it comes out `yes` on its own.
+
+`libqvkkhrdisplay.so` then builds, and Qt's Vulkan works -
+`QVulkanInstance::create()` succeeds, 24 extensions, llvmpipe enumerated. The
+plugin just cannot find a display to scan out to under WSL.
+
+A clean configure of qtbase with EGL, OpenGL ES and Vulkan all on builds
+1490/1490, and both paths run:
+
+```
+===== Qt OpenGL ES through ANGLE (eglfs) =====
+GL_RENDERER: ANGLE (Mesa, Vulkan 1.4.318 (llvmpipe), llvmpipe-25.2.8)
+GL_VERSION : OpenGL ES 3.1 (ANGLE 2.1.1)
+qtgl: PASS
+
+===== Qt Vulkan directly (vkkhrdisplay) =====
+physical devices: 1
+   llvmpipe (LLVM 20.1.2, 128 bits)
+qtvk: PASS
+```
 
 Also worth stating: Qt wants far more from a sysroot than GL - fontconfig,
 xkbcommon, the platform integration of your choice - none of which this project
